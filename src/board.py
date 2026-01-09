@@ -319,7 +319,7 @@ class Board:
         # If target is flying, only other flyers can defend
         if target_is_flying:
             for card in self.get_flying_cards(player=target.player):
-                if card == target or not card.is_alive:
+                if card == target or not card.is_alive or card.webbed:
                     continue
                 if card.tapped and "unlimited_defender" not in card.stats.ability_ids:
                     continue
@@ -330,7 +330,7 @@ class Board:
         if attacker_is_flying:
             # Flyers can defend
             for card in self.get_flying_cards(player=target.player):
-                if card == target or not card.is_alive:
+                if card == target or not card.is_alive or card.webbed:
                     continue
                 if card.tapped and "unlimited_defender" not in card.stats.ability_ids:
                     continue
@@ -339,7 +339,7 @@ class Board:
             target_adjacent = self.get_adjacent_cells(target.position, include_diagonals=True)
             for pos in target_adjacent:
                 card = self.get_card(pos)
-                if card is None or card.player != target.player or card == target or not card.is_alive:
+                if card is None or card.player != target.player or card == target or not card.is_alive or card.webbed:
                     continue
                 if card.tapped and "unlimited_defender" not in card.stats.ability_ids:
                     continue
@@ -353,7 +353,7 @@ class Board:
 
         for pos in common_adjacent:
             card = self.get_card(pos)
-            if card is None or card.player != target.player or card == target or not card.is_alive:
+            if card is None or card.player != target.player or card == target or not card.is_alive or card.webbed:
                 continue
             if card.tapped and "unlimited_defender" not in card.stats.ability_ids:
                 continue

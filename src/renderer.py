@@ -324,40 +324,40 @@ class Renderer:
     def draw_highlights(self, game: Game):
         """Draw movement, attack, and defender highlights."""
         # Counter shot target mode - highlight valid targets
-        if game.awaiting_counter_shot:
-            for pos in game.counter_shot_targets:
+        if game.awaiting_counter_shot and game.interaction:
+            for pos in game.interaction.valid_positions:
                 x, y = self.pos_to_screen(pos)
                 hl = self._get_highlight(self.counter_shot_highlight, self.counter_shot_highlight_fly, pos)
                 self.screen.blit(hl, (x, y))
             return  # Don't draw normal highlights during counter shot selection
 
         # Movement shot target mode - highlight valid targets
-        if game.awaiting_movement_shot:
-            for pos in game.movement_shot_targets:
+        if game.awaiting_movement_shot and game.interaction:
+            for pos in game.interaction.valid_positions:
                 x, y = self.pos_to_screen(pos)
                 hl = self._get_highlight(self.counter_shot_highlight, self.counter_shot_highlight_fly, pos)
                 self.screen.blit(hl, (x, y))
             return  # Don't draw normal highlights during movement shot selection
 
         # Valhalla target mode - highlight valid targets
-        if game.awaiting_valhalla:
-            for pos in game.valhalla_targets:
+        if game.awaiting_valhalla and game.interaction:
+            for pos in game.interaction.valid_positions:
                 x, y = self.pos_to_screen(pos)
                 hl = self._get_highlight(self.valhalla_highlight, self.valhalla_highlight_fly, pos)
                 self.screen.blit(hl, (x, y))
             return  # Don't draw normal highlights during Valhalla selection
 
         # Defender choice mode - highlight valid defenders
-        if game.awaiting_defender and game.pending_attack:
+        if game.awaiting_defender and game.interaction:
             # Highlight original target in red
-            target = game.pending_attack.original_target
-            if target.position is not None:
+            target = game.interaction.target
+            if target and target.position is not None:
                 x, y = self.pos_to_screen(target.position)
                 hl = self._get_highlight(self.attack_highlight, self.attack_highlight_fly, target.position)
                 self.screen.blit(hl, (x, y))
 
             # Highlight valid defenders in cyan
-            for defender in game.pending_attack.valid_defenders:
+            for defender in game.interaction.valid_cards:
                 if defender.position is not None:
                     x, y = self.pos_to_screen(defender.position)
                     hl = self._get_highlight(self.defender_highlight, self.defender_highlight_fly, defender.position)
@@ -365,8 +365,8 @@ class Renderer:
             return  # Don't draw normal highlights during defender choice
 
         # Ability targeting mode - highlight valid targets
-        if game.pending_ability and game.valid_ability_targets:
-            for pos in game.valid_ability_targets:
+        if game.awaiting_ability_target and game.interaction:
+            for pos in game.interaction.valid_positions:
                 x, y = self.pos_to_screen(pos)
                 hl = self._get_highlight(self.ability_highlight, self.ability_highlight_fly, pos)
                 self.screen.blit(hl, (x, y))
@@ -722,7 +722,7 @@ class Renderer:
             self.draw_valhalla_prompt(game)
 
         # Defender choice prompt
-        if game.awaiting_defender and game.pending_attack:
+        if game.awaiting_defender and game.interaction:
             self.draw_defender_prompt(game)
 
         # Selected card info
@@ -742,10 +742,10 @@ class Renderer:
 
     def draw_counter_shot_prompt(self, game: Game):
         """Draw the counter shot target selection prompt (draggable)."""
-        if not game.pending_counter_shot:
+        if not game.awaiting_counter_shot or not game.interaction:
             return
 
-        attacker = game.pending_counter_shot
+        attacker = game.interaction.actor
 
         config = PopupConfig(
             popup_id='counter_shot',
@@ -766,10 +766,10 @@ class Renderer:
 
     def draw_movement_shot_prompt(self, game: Game):
         """Draw the movement shot target selection prompt (draggable)."""
-        if not game.pending_movement_shot:
+        if not game.awaiting_movement_shot or not game.interaction:
             return
 
-        shooter = game.pending_movement_shot
+        shooter = game.interaction.actor
 
         config = PopupConfig(
             popup_id='movement_shot',
@@ -793,11 +793,12 @@ class Renderer:
 
     def draw_heal_confirm_prompt(self, game: Game):
         """Draw the heal confirmation prompt with clickable buttons (draggable)."""
-        if not game.pending_heal_confirm:
+        if not game.awaiting_heal_confirm or not game.interaction:
             self.heal_confirm_buttons = []
             return
 
-        attacker, heal_amount = game.pending_heal_confirm
+        attacker = game.interaction.actor
+        heal_amount = game.interaction.amount
 
         config = PopupConfig(
             popup_id='heal_confirm',
@@ -831,11 +832,12 @@ class Renderer:
 
     def draw_stench_choice_prompt(self, game: Game):
         """Draw the stench choice prompt - target must tap or take damage (draggable)."""
-        if not game.pending_stench_choice:
+        if not game.awaiting_stench_choice or not game.interaction:
             self.stench_choice_buttons = []
             return
 
-        attacker, target, damage = game.pending_stench_choice
+        target = game.interaction.target
+        damage = game.interaction.amount
 
         config = PopupConfig(
             popup_id='stench_choice',
@@ -869,13 +871,13 @@ class Renderer:
 
     def draw_exchange_prompt(self, game: Game):
         """Draw the exchange choice prompt with clickable buttons (draggable)."""
-        if not game.awaiting_exchange_choice or not game.exchange_context:
+        if not game.awaiting_exchange_choice or not game.interaction:
             self.exchange_buttons = []
             return
 
-        ctx = game.exchange_context
-        attacker = ctx['attacker']
-        defender = ctx['defender']
+        attacker = game.interaction.actor
+        defender = game.interaction.target
+        ctx = game.interaction.context
         attacker_advantage = ctx.get('attacker_advantage', True)
         roll_diff = ctx.get('roll_diff', 0)
 
@@ -940,10 +942,13 @@ class Renderer:
 
     def draw_valhalla_prompt(self, game: Game):
         """Draw the Valhalla target selection prompt (draggable)."""
-        if not game.current_valhalla:
+        if not game.interaction:
             return
 
-        dead_card, ability = game.current_valhalla
+        dead_card = game.interaction.actor
+        ability = game.interaction.context.get('ability')
+        if not ability:
+            return
 
         config = PopupConfig(
             popup_id='valhalla',
@@ -967,8 +972,8 @@ class Renderer:
 
     def draw_defender_prompt(self, game: Game):
         """Draw the defender choice prompt banner (draggable)."""
-        pending = game.pending_attack
-        defending_player = pending.original_target.player
+        interaction = game.interaction
+        defending_player = interaction.target.player
 
         config = PopupConfig(
             popup_id='defender',
@@ -982,7 +987,7 @@ class Renderer:
         x, y, content_y = self.draw_popup_base(config)
 
         # Attack info
-        info = f"{pending.attacker.name} атакует {pending.original_target.name}"
+        info = f"{interaction.actor.name} атакует {interaction.target.name}"
         content_y = self.draw_popup_text(x, config.width, content_y, info, (255, 255, 255))
 
         # Instructions
@@ -1798,18 +1803,23 @@ class Renderer:
 
         # Attacker dice row
         atk_color = COLOR_PLAYER1 if attacker.player == 1 else COLOR_PLAYER2
-        atk_mod = dice.get('atk_modifier', 0)
-        atk_total = dice['atk_roll'] + atk_mod
+        atk_mod = dice.get('atk_modifier', 0)  # Luck modifier
+        atk_bonus = dice.get('atk_bonus', 0)   # Ability bonus (OvA)
+        atk_roll = dice['atk_roll']
+        atk_total = atk_roll + atk_mod + atk_bonus
 
         # Show name and original roll
         atk_name_surface = self.font_medium.render(f"{attacker.name}:", True, atk_color)
         self.screen.blit(atk_name_surface, (popup_x + 15, y_offset))
 
-        # Show dice value with modification highlighted
+        # Show dice value with bonus and luck modification
         dice_x = popup_x + 140
+        # Format: [roll+bonus] or [roll+bonus] -> [modified] if luck used
+        bonus_str = f"+{atk_bonus}" if atk_bonus > 0 else ""
+
         if atk_mod != 0:
-            # Show: [original] -> [modified] with color
-            orig_text = f"[{dice['atk_roll']}]"
+            # Show: [roll+bonus] -> [total] with color
+            orig_text = f"[{atk_roll}{bonus_str}]"
             orig_surface = self.font_medium.render(orig_text, True, (150, 150, 150))
             self.screen.blit(orig_surface, (dice_x, y_offset))
 
@@ -1821,7 +1831,11 @@ class Renderer:
             mod_surface = self.font_medium.render(mod_text, True, mod_color)
             self.screen.blit(mod_surface, (dice_x + orig_surface.get_width() + arrow_surface.get_width(), y_offset))
         else:
-            dice_text = f"[{dice['atk_roll']}]"
+            # Show roll with bonus: [roll+bonus=total] or just [roll] if no bonus
+            if atk_bonus > 0:
+                dice_text = f"[{atk_roll}+{atk_bonus}={atk_roll + atk_bonus}]"
+            else:
+                dice_text = f"[{atk_roll}]"
             dice_surface = self.font_medium.render(dice_text, True, COLOR_TEXT)
             self.screen.blit(dice_surface, (dice_x, y_offset))
 
@@ -1841,21 +1855,26 @@ class Renderer:
 
         y_offset += 55
 
-        # Defender dice row (only for combat, not ranged attacks)
-        if not is_ranged and defender:
+        # Defender dice row (only for combat, not ranged attacks, and only if defender rolled)
+        # def_roll is 0 when attacking a tapped creature (no counter-attack)
+        if not is_ranged and defender and dice.get('def_roll', 0) > 0:
             def_color = COLOR_PLAYER1 if defender.player == 1 else COLOR_PLAYER2
-            def_mod = dice.get('def_modifier', 0)
-            def_total = dice['def_roll'] + def_mod
+            def_mod = dice.get('def_modifier', 0)  # Luck modifier
+            def_bonus = dice.get('def_bonus', 0)   # Ability bonus (OvZ)
+            def_roll = dice['def_roll']
+            def_total = def_roll + def_mod + def_bonus
 
             # Show name and original roll
             def_name_surface = self.font_medium.render(f"{defender.name}:", True, def_color)
             self.screen.blit(def_name_surface, (popup_x + 15, y_offset))
 
-            # Show dice value with modification highlighted
+            # Show dice value with bonus and luck modification
             dice_x = popup_x + 140
+            bonus_str = f"+{def_bonus}" if def_bonus > 0 else ""
+
             if def_mod != 0:
-                # Show: [original] -> [modified] with color
-                orig_text = f"[{dice['def_roll']}]"
+                # Show: [roll+bonus] -> [total] with color
+                orig_text = f"[{def_roll}{bonus_str}]"
                 orig_surface = self.font_medium.render(orig_text, True, (150, 150, 150))
                 self.screen.blit(orig_surface, (dice_x, y_offset))
 
@@ -1867,7 +1886,11 @@ class Renderer:
                 mod_surface = self.font_medium.render(mod_text, True, mod_color)
                 self.screen.blit(mod_surface, (dice_x + orig_surface.get_width() + arrow_surface.get_width(), y_offset))
             else:
-                dice_text = f"[{dice['def_roll']}]"
+                # Show roll with bonus: [roll+bonus=total] or just [roll] if no bonus
+                if def_bonus > 0:
+                    dice_text = f"[{def_roll}+{def_bonus}={def_roll + def_bonus}]"
+                else:
+                    dice_text = f"[{def_roll}]"
                 dice_surface = self.font_medium.render(dice_text, True, COLOR_TEXT)
                 self.screen.blit(dice_surface, (dice_x, y_offset))
 

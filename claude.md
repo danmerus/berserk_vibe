@@ -110,22 +110,23 @@ Pos 33-35    | 25 26 27 28 29         | Pos 30-32
 - `ON_KILL` - When killing an enemy (scavenging)
 - `VALHALLA` - From graveyard when killed by enemy
 
-### Implemented Abilities
+### Implemented Abilities (57 total)
 
 | ID | Name | Description |
 |----|------|-------------|
 | `heal_ally` | Дыхание леса | Heal any creature +2 HP |
+| `heal_1` | Лечение | Heal any creature +1 HP |
 | `crown_runner_shot` | Выстрел | Ranged 1-2-2 damage (min range 2) |
-| `lunge` / `lunge_2` | Удар через ряд | Attack through one cell (fixed damage) |
-| `attack_exp` | Опыт в атаке | +1 to attack dice roll |
-| `defense_exp` | Опыт в защите | +1 to defense dice roll |
-| `regeneration` | Регенерация | +3 HP at turn start |
-| `regeneration_1` | Регенерация | +1 HP at turn start |
+| `lunge` / `lunge_2` | Удар через ряд | Attack through one cell (1 or 2 fixed damage) |
+| `attack_exp` | Опыт в атаке | +1 to attack dice roll (ОвА+1) |
+| `defense_exp` | Опыт в защите | +1 to defense dice roll (ОвЗ+1) |
+| `regeneration` | Регенерация | +3 HP at turn start (if damaged) |
+| `regeneration_1` | Регенерация | +1 HP at turn start (if damaged) |
 | `tough_hide` | Толстая шкура | -2 damage from creatures costing ≤3 |
 | `direct_attack` | Направленный | Attack cannot be intercepted |
-| `poison_immune` | Защита от яда | Cannot be poisoned |
-| `magic_immune` | Защита от магии | Immune to magic/spells |
+| `magic_immune` | Защита от магии | Immune to magic/spells/discharges |
 | `shot_immune` | Защита от выстрелов | Immune to ranged attacks |
+| `discharge_immune` | Защита от разрядов | Immune to discharge attacks |
 | `diagonal_defense` | Защита от диагонали | -2 damage from diagonal attacks |
 | `restricted_strike` | Только напротив | Can only attack card directly opposite |
 | `magical_strike` | Магический удар | Deal 2 magic damage (ignores reductions) |
@@ -136,7 +137,31 @@ Pos 33-35    | 25 26 27 28 29         | Pos 30-32
 | `heal_on_attack` | Исцеление при ударе | Heal for target's medium damage when attacking |
 | `scavenging` | Трупоедство | Full heal when killing enemy |
 | `valhalla_ova` | Вальхалла | Give ally +1 attack dice (from graveyard) |
+| `valhalla_strike` | Вальхалла | Give ally +1 strike damage (from graveyard) |
 | `flying` | Летающий | Flying creature marker |
+| `gain_counter` | Получить фишку | Tap to gain a counter (max 3) |
+| `discharge` | Разряд | Deal 2 (+3 per counter) magic damage at range |
+| `web_throw` | Паутина | Apply webbed status (range 2, not vs flyers) |
+| `luck` | Удача | Instant: modify dice roll ±1 or reroll |
+| `hellish_stench` | Адское зловоние | On attack: target taps or takes 2 damage |
+| `borg_counter` | Накопить фишку | Tap to gain counter (Борг) |
+| `borg_strike` | Особый удар | Spend counter: 3 damage + stun |
+| `axe_counter` | Накопление | Gain counter at turn start (in formation) |
+| `axe_tap` | Накопить фишку | Tap to gain counter (Мастер топора) |
+| `axe_strike` | Магический удар | Magic strike 0-1-2 (+1 per counter) |
+| `icicle_throw` | Сосулька | Throw 1-2-2 (range 3), +1 vs defensive |
+| `anti_swamp` | Враг болот | +2 damage vs swamp creatures |
+| `anti_magic` | Пожиратель магии | +1 damage vs creatures with magic abilities |
+| `movement_shot` | Выстрел при движении | Shot when moving adjacent to ally 7+ cost |
+| `front_row_bonus` | Бонус первого ряда | +1 ranged damage in front row |
+| `back_row_direct` | Прямой выстрел | Direct ranged attacks in back row |
+| `center_column_defense` | Оборона в центре | In center: +1 ОвЗ, -1 weak damage |
+| `edge_column_attack` | Атака с флангов | On flanks: +1 ОвА, +1 med/strong damage |
+| `jump` | Прыжок | Can jump over creatures |
+| `tapped_bonus` | Охотник на закрытых | +1 damage and direct vs tapped |
+| `must_attack_tapped` | Охота на закрытых | Must attack adjacent tapped enemy |
+| `closed_attack_bonus` | Бьёт лежачих | +1 damage vs tapped creatures |
+| `stroi_*` | Строй | Formation bonuses (multiple variants) |
 
 ---
 
@@ -310,7 +335,50 @@ pygame>=2.5.0
 
 ## Session Notes
 
-### Recent Changes (2026-01-08)
+### Recent Changes (2026-01-10)
+
+**Refactoring #3 - Ability Precondition System:**
+- Added declarative precondition fields to Ability dataclass:
+  - `requires_counters`, `spends_counters` - Counter requirements
+  - `requires_own_row` - Position requirements (1=front, 2=middle, 3=back)
+  - `requires_edge_column`, `requires_center_column` - Column requirements
+  - `target_must_be_tapped`, `target_not_flying` - Target requirements
+  - `requires_damaged`, `requires_formation` - Card state requirements
+- Created `check_preconditions()` and `check_trigger_preconditions()` functions in ability_handlers.py
+- Updated abilities: front_row_bonus, back_row_direct, regeneration, borg_strike, web_throw, axe_counter
+
+**Bug Fix - Movement During Popups:**
+- Added `has_blocking_interaction` property to Game class
+- Blocked movement/attacks during popup decisions (defender, valhalla, counter_shot, heal_confirm, stench, exchange)
+
+**Refactoring #5 - Data-Driven Simple Abilities:**
+- Added `EffectType` enum with values: NONE, HEAL_TARGET, HEAL_SELF, FULL_HEAL_SELF, BUFF_ATTACK, BUFF_RANGED, BUFF_DICE, GRANT_DIRECT, GAIN_COUNTER, APPLY_WEBBED
+- Added `effect_type` field to Ability dataclass
+- Created generic execution functions: `execute_effect()`, `execute_trigger_effect()`, `execute_ability()`
+- Simplified handlers to use data-driven execution instead of custom logic
+
+**Code Cleanup - Removed Unused Abilities:**
+- Removed `first_strike` - defined but no card used it
+- Removed `inspire` - defined with handler but no card used it
+- Removed `ranged_shot` - defined but no card used it
+- Removed `powerful_blow` - defined but no card used it
+
+**Consolidated Duplicate Abilities:**
+- Removed `ova_1` (ОвА+1) → now use `attack_exp` (Опыт в атаке)
+- Removed `ovz_1` (ОвЗ+1) → now use `defense_exp` (Опыт в защите)
+- Ability count reduced from 62 to 57
+
+**Test Deck Update:**
+- Added Дракс (flying creature) to Player 1's starter deck for flying mechanics testing
+
+**Known Issues Identified (not yet fixed):**
+- `steppe_defense` - Checks for Element.PLAINS which doesn't exist (dead code)
+- `poison_immune` - Assigned to cards but no game logic implements it
+- `flyer_taunt` - Assigned to Паук-пересмешник but no game logic enforces it
+
+---
+
+### Previous Session (2026-01-08)
 - Added resizable window with F11 fullscreen toggle
 - Implemented render surface scaling (maintains aspect ratio)
 - Added interaction arrows for attacks/heals

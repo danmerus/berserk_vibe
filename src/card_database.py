@@ -52,18 +52,6 @@ def get_card_image(card_name: str) -> Optional[str]:
 
 CARD_DATABASE = {
     # Mountains cards (Горы)
-    "Циклоп": CardStats(
-        name="Циклоп",
-        cost=8,
-        element=Element.MOUNTAINS,
-        card_type=CardType.CREATURE,
-        life=14,
-        attack=(4, 5, 6),
-        move=1,
-        is_elite=True,
-        description="",
-        ability_ids=["restricted_strike", "magical_strike", "direct_attack", "poison_immune", "magic_immune", "regeneration_1"]
-    ),
     "Гном-басаарг": CardStats(
         name="Гном-басаарг",
         cost=7,
@@ -74,7 +62,7 @@ CARD_DATABASE = {
         attack=(2, 3, 4),
         move=1,
         description="",
-        ability_ids=["ova_1", "stroi_atk_1", "tapped_bonus", "must_attack_tapped"]
+        ability_ids=["attack_exp", "stroi_atk_1", "tapped_bonus", "must_attack_tapped"]
     ),
     "Хобгоблин": CardStats(
         name="Хобгоблин",
@@ -110,7 +98,7 @@ CARD_DATABASE = {
         move=1,
         is_elite=True,
         description="",
-        ability_ids=["gain_counter", "discharge"],
+        ability_ids=["gain_counter", "discharge", "magic_immune"],
         max_counters=3
     ),
     "Гобрах": CardStats(
@@ -173,7 +161,7 @@ CARD_DATABASE = {
         move=1,
         is_elite=True,
         description="",
-        ability_ids=["ova_1", "ovz_1", "valhalla_strike"]
+        ability_ids=["attack_exp", "defense_exp", "valhalla_strike"]
     ),
     "Смотритель горнила": CardStats(
         name="Смотритель горнила",
@@ -201,6 +189,18 @@ CARD_DATABASE = {
     ),
 
     # Forest cards (Лес)
+    "Циклоп": CardStats(
+        name="Циклоп",
+        cost=8,
+        element=Element.FOREST,
+        card_type=CardType.CREATURE,
+        life=14,
+        attack=(4, 5, 6),
+        move=1,
+        is_elite=True,
+        description="",
+        ability_ids=["restricted_strike", "magical_strike", "direct_attack", "poison_immune", "magic_immune", "regeneration_1"]
+    ),
     "Лёккен": CardStats(
         name="Лёккен",
         cost=6,
@@ -387,6 +387,7 @@ def create_starter_deck() -> List[str]:
         "Ловец удачи",
         "Борг",  # Stun ability testing
         "Мразень", "Мразень",  # 2x for icicle ranged testing
+        "Дракс",  # Flying creature for P1
     ]
 
 

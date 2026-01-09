@@ -177,8 +177,8 @@ class Card:
         self.curr_move = 0
 
     def can_use_ability(self, ability_id: str) -> bool:
-        """Check if ability can be used (not on cooldown, not tapped)."""
-        if self.tapped or not self.is_alive:
+        """Check if ability can be used (not on cooldown, not tapped, not webbed)."""
+        if self.tapped or not self.is_alive or self.webbed:
             return False
         return ability_id not in self.ability_cooldowns
 

@@ -8,6 +8,7 @@ from .card import Card, create_card
 from .card_database import create_starter_deck, create_starter_deck_p2
 from .constants import GamePhase
 from .abilities import get_ability, AbilityType, AbilityTrigger, TargetType, Ability
+from .ability_handlers import get_handler, has_handler, get_targeter, get_trigger_handler
 from .interaction import Interaction, InteractionKind
 
 
@@ -32,14 +33,6 @@ class CombatResult:
         return self.defender_roll + self.defender_bonus
 
 
-@dataclass
-class PendingAttack:
-    """Stores info about an attack waiting for defender choice."""
-    attacker: Card
-    original_target: Card
-    valid_defenders: List[Card]
-
-
 class Game:
     """Main game state and logic."""
 
@@ -62,33 +55,8 @@ class Game:
         # Combat state
         self.last_combat: Optional[CombatResult] = None
 
-        # Defender intercept state
-        self.awaiting_defender: bool = False
-        self.pending_attack: Optional[PendingAttack] = None
-
-        # Ability targeting state
-        self.pending_ability: Optional[Ability] = None
-        self.pending_ability_card: Optional[Card] = None
-        self.valid_ability_targets: List[int] = []
-
-        # Valhalla targeting state
+        # Valhalla targeting state (queue of pending triggers)
         self.pending_valhalla: List[Tuple[Card, Ability]] = []  # Queue of (dead_card, ability)
-        self.current_valhalla: Optional[Tuple[Card, Ability]] = None
-        self.valhalla_targets: List[int] = []
-
-        # Counter shot targeting state
-        self.pending_counter_shot: Optional[Card] = None  # Attacker with counter_shot
-        self.counter_shot_targets: List[int] = []
-
-        # Movement shot targeting state (Оури ability)
-        self.pending_movement_shot: Optional[Card] = None
-        self.movement_shot_targets: List[int] = []
-
-        # Heal on attack confirmation state
-        self.pending_heal_confirm: Optional[Tuple[Card, int]] = None  # (attacker, heal_amount)
-
-        # Hellish stench choice state (target must tap or take damage)
-        self.pending_stench_choice: Optional[Tuple[Card, Card, int]] = None  # (attacker, target, damage)
 
         # Friendly fire confirmation
         self.friendly_fire_target: Optional[int] = None
@@ -99,10 +67,6 @@ class Game:
         self.priority_passed: List[int] = []    # Players who have passed priority
         self.pending_dice_roll: Optional[dict] = None  # Dice roll waiting for resolution
         self.instant_stack: List[dict] = []     # Stack of instant abilities to resolve
-
-        # Exchange choice state (when attacker can reduce damage to avoid counter)
-        self.awaiting_exchange_choice: bool = False
-        self.exchange_context: Optional[dict] = None  # Stores combat context for exchange
 
         # Card ID counter
         self._next_card_id = 1
@@ -211,18 +175,16 @@ class Game:
         if not killer.is_alive:
             return
 
+        ctx = {'victim': victim}
         for ability_id in killer.stats.ability_ids:
             ability = get_ability(ability_id)
             if not ability or ability.trigger != AbilityTrigger.ON_KILL:
                 continue
 
-            # Scavenging: full heal on kill
-            if ability.id == "scavenging":
-                if killer.curr_life < killer.life:
-                    heal_amount = killer.life - killer.curr_life
-                    killer.curr_life = killer.life
-                    self.emit_heal(killer.position, heal_amount)
-                    self.log(f"  -> {killer.name}: трупоедство! Полностью исцелён")
+            # Try registered trigger handler first
+            handler = get_trigger_handler(ability_id)
+            if handler:
+                handler(self, killer, ability, ctx)
 
     def _check_winner(self) -> bool:
         """Check for winner and update game state. Returns True if game ended."""
@@ -420,8 +382,8 @@ class Game:
             without_abilities = [c for c in ground if not c.stats.ability_ids and c.stats.cost < 7]
             without_abilities.sort(key=lambda c: c.stats.cost, reverse=True)
 
-            # Order: Giants, lightning, axe masters, dwarves, borgs, furnace (next to borg for formation), keepers, frost, ravine, hunters, crushers, then others
-            selected_ground = (giants + lightning + axe_masters + dwarves + borgs + furnace + keepers + frost + ravine + hunters[:1] + crushers[:1] + ouri[:1] + expensive[:1] + luck + spider + sailors + elf + hunters[1:] + crushers[1:] + ouri[1:] + expensive[1:] + with_abilities + without_abilities)[:count]
+            # Order: Giants, lightning, axe masters, dwarves, borgs, furnace (next to borg for formation), keepers, frost, ravine, luck (instant ability), hunters, crushers, then others
+            selected_ground = (giants + lightning + axe_masters + dwarves + borgs + furnace + keepers + frost + ravine + luck + hunters[:1] + crushers[:1] + ouri[:1] + expensive[:1] + spider + sailors + elf + hunters[1:] + crushers[1:] + ouri[1:] + expensive[1:] + with_abilities + without_abilities)[:count]
             return selected_ground, flying
 
         ground_p1, flying_p1 = select_cards(self.hand_p1, len(positions_p1))
@@ -660,13 +622,13 @@ class Game:
     def _process_next_valhalla(self):
         """Process the next Valhalla trigger in queue."""
         if not self.pending_valhalla:
-            self.current_valhalla = None
-            self.valhalla_targets = []
+            # Clear any Valhalla interaction
+            if self.interaction and self.interaction.kind == InteractionKind.SELECT_VALHALLA_TARGET:
+                self.interaction = None
             return
 
         # Get next Valhalla
         dead_card, ability = self.pending_valhalla.pop(0)
-        self.current_valhalla = (dead_card, ability)
 
         # Get valid targets (living allies)
         allies = self.board.get_all_cards(dead_card.player)
@@ -677,32 +639,41 @@ class Game:
             self._process_next_valhalla()  # Process next one
             return
 
-        # Set valid targets for selection
-        self.valhalla_targets = [c.position for c in allies]
+        # Enter Valhalla target selection using unified Interaction
+        self.interaction = Interaction(
+            kind=InteractionKind.SELECT_VALHALLA_TARGET,
+            actor=dead_card,
+            valid_cards=allies,
+            valid_positions=[c.position for c in allies],
+            context={'ability': ability},
+        )
         self.log(f"Вальхалла {dead_card.name}: выберите существо")
 
     def select_valhalla_target(self, pos: int) -> bool:
         """Player selects target for Valhalla ability."""
-        if not self.current_valhalla or pos not in self.valhalla_targets:
+        if not self.awaiting_valhalla:
             return False
 
-        dead_card, ability = self.current_valhalla
+        if not self.interaction.can_select_position(pos):
+            return False
+
+        dead_card = self.interaction.actor
+        ability = self.interaction.context.get('ability')
         target = self.board.get_card(pos)
 
-        if not target:
+        if not target or not ability:
             return False
 
         # Apply Valhalla effect
         if ability.id == "valhalla_ova":
-            target.temp_dice_bonus += ability.bonus_attack
-            self.log(f"  -> {target.name} получил ОвА+{ability.bonus_attack}")
+            target.temp_dice_bonus += ability.dice_bonus_attack
+            self.log(f"  -> {target.name} получил ОвА+{ability.dice_bonus_attack}")
         elif ability.id == "valhalla_strike":
-            target.temp_attack_bonus += ability.bonus_attack
-            self.log(f"  -> {target.name} получил +{ability.bonus_attack} к удару")
+            target.temp_attack_bonus += ability.damage_bonus
+            self.log(f"  -> {target.name} получил +{ability.damage_bonus} к удару")
 
         # Clear current and process next
-        self.current_valhalla = None
-        self.valhalla_targets = []
+        self.interaction = None
         self._process_next_valhalla()
 
         return True
@@ -710,16 +681,23 @@ class Game:
     @property
     def awaiting_valhalla(self) -> bool:
         """Check if waiting for Valhalla target selection."""
-        return self.current_valhalla is not None
+        return self.interaction is not None and self.interaction.kind == InteractionKind.SELECT_VALHALLA_TARGET
 
     def _process_turn_start_triggers(self):
         """Process all ON_TURN_START triggered abilities."""
+        ctx = {}  # No extra context for turn start
         for card in self.board.get_all_cards(self.current_player):
             for ability_id in card.stats.ability_ids:
                 ability = get_ability(ability_id)
                 if ability and ability.ability_type == AbilityType.TRIGGERED:
                     if ability.trigger == AbilityTrigger.ON_TURN_START:
-                        self._execute_triggered_ability(card, ability)
+                        # Try registered trigger handler first
+                        handler = get_trigger_handler(ability_id)
+                        if handler:
+                            handler(self, card, ability, ctx)
+                        else:
+                            # Fallback for unregistered triggers
+                            self._execute_triggered_ability(card, ability)
 
     def _get_card_row(self, card: Card) -> int:
         """Get the row number (0-5) for a card's position."""
@@ -751,32 +729,17 @@ class Game:
             return row == (2 + row_num)
 
     def _execute_triggered_ability(self, card: Card, ability: Ability):
-        """Execute a triggered ability automatically."""
-        # Regeneration
+        """Execute a triggered ability automatically (fallback for unregistered triggers).
+
+        Most triggers are now handled via registered handlers in ability_handlers.py.
+        This method handles any remaining generic cases.
+        """
+        # Generic heal-based triggers (fallback)
         if ability.heal_amount > 0 and card.curr_life < card.life:
             healed = card.heal(ability.heal_amount)
             if healed > 0:
                 self.log(f"{card.name}: {ability.name} (+{healed} HP)")
                 self.emit_heal(card.position, healed)
-
-        # Front row bonus (+1 to ranged) - first row = closest to middle
-        if ability.id == "front_row_bonus":
-            if self._is_in_own_row(card, 1):  # First row (front, closest to middle)
-                card.temp_ranged_bonus += ability.bonus_attack
-                self.log(f"{card.name}: +{ability.bonus_attack} к выстрелам (первый ряд)")
-
-        # Back row direct (third row grants direct) - third row = back line
-        if ability.id == "back_row_direct":
-            if self._is_in_own_row(card, 3):  # Third row (back line)
-                card.has_direct = True
-                self.log(f"{card.name}: прямой удар (третий ряд)")
-
-        # Axe counter - gain counter at turn start (only in formation)
-        if ability.id == "axe_counter":
-            if card.in_formation:
-                if card.max_counters == 0 or card.counters < card.max_counters:
-                    card.counters += 1
-                    self.log(f"{card.name}: +1 фишка в строю ({card.counters})")
 
     def get_usable_abilities(self, card: Card) -> List[Ability]:
         """Get list of active abilities the card can use right now."""
@@ -816,13 +779,6 @@ class Game:
             # Use correct ranged type name
             ranged_name = "Метание" if ability.ranged_type == "throw" else "Выстрел"
             return f"{ranged_name} {d0}-{d1}-{d2}"
-
-        # Regular ranged shot using card attack
-        if ability.id == "ranged_shot":
-            bonus = card.temp_ranged_bonus
-            atk = card.stats.attack
-            d0, d1, d2 = atk[0] + bonus, atk[1] + bonus, atk[2] + bonus
-            return f"Выстрел {d0}-{d1}-{d2}"
 
         # Heal abilities
         if ability.heal_amount > 0:
@@ -866,9 +822,13 @@ class Game:
                 if not targets:
                     self.log("Нет доступных целей!")
                     return False
-                self.pending_ability = ability
-                self.pending_ability_card = card
-                self.valid_ability_targets = targets
+                # Enter ability targeting using unified Interaction
+                self.interaction = Interaction(
+                    kind=InteractionKind.SELECT_ABILITY_TARGET,
+                    actor=card,
+                    valid_positions=targets,
+                    context={'ability': ability},
+                )
                 self.log(f"Выберите цель для {ability.name} (0 фишек)")
                 return True
             # Start counter selection mode
@@ -894,10 +854,13 @@ class Game:
                 self.log("Нет доступных целей!")
                 return False
 
-            # Store pending ability for target selection
-            self.pending_ability = ability
-            self.pending_ability_card = card
-            self.valid_ability_targets = targets
+            # Enter ability targeting using unified Interaction
+            self.interaction = Interaction(
+                kind=InteractionKind.SELECT_ABILITY_TARGET,
+                actor=card,
+                valid_positions=targets,
+                context={'ability': ability},
+            )
             self.log(f"Выберите цель для {ability.name}")
             return True
 
@@ -905,8 +868,6 @@ class Game:
 
     def _get_ability_targets(self, card: Card, ability: Ability) -> List[int]:
         """Get valid target positions for an ability."""
-        targets = []
-
         if ability.range == 0:
             # Self only
             return [card.position] if card.position is not None else []
@@ -914,6 +875,20 @@ class Game:
         # Get cells in range
         if card.position is None:
             return []
+
+        # Collect base targets based on range and target_type
+        base_targets = self._get_base_ability_targets(card, ability)
+
+        # Apply custom targeter if registered
+        custom_targeter = get_targeter(ability.id)
+        if custom_targeter:
+            return custom_targeter(self, card, ability, base_targets)
+
+        return base_targets
+
+    def _get_base_ability_targets(self, card: Card, ability: Ability) -> List[int]:
+        """Get base targets filtered by range and target_type (before custom targeting)."""
+        targets = []
 
         if ability.range == 1:
             cells = self.board.get_adjacent_cells(card.position, include_diagonals=True)
@@ -936,11 +911,6 @@ class Game:
             if target_card is None:
                 continue
 
-            # Lunge: check path doesn't go through enemies (only orthogonal)
-            if ability.id.startswith("lunge"):
-                if not self._is_valid_lunge_path(card.position, pos, card.player):
-                    continue
-
             if ability.target_type == TargetType.ENEMY and target_card.player != card.player:
                 targets.append(pos)
             elif ability.target_type == TargetType.ALLY and target_card.player == card.player and target_card != card:
@@ -949,9 +919,8 @@ class Game:
                 # ANY includes self, allies, and enemies
                 targets.append(pos)
 
-        # Ranged abilities (range >= 2, except lunge and web_throw) can always target flying creatures
-        # Web throw cannot target flyers (can't web a flying creature)
-        if ability.range >= 2 and not ability.id.startswith("lunge") and ability.id != "web_throw":
+        # Ranged abilities (range >= 2) can target flying creatures
+        if ability.range >= 2:
             for flying_card in self.board.get_flying_cards():
                 if flying_card.position is not None and flying_card.position not in targets:
                     if ability.target_type == TargetType.ENEMY and flying_card.player != card.player:
@@ -962,27 +931,6 @@ class Game:
                         targets.append(flying_card.position)
 
         return targets
-
-    def _is_valid_lunge_path(self, from_pos: int, to_pos: int, player: int) -> bool:
-        """Check if lunge path is valid (orthogonal, no enemies in between)."""
-        from_col, from_row = from_pos % 5, from_pos // 5
-        to_col, to_row = to_pos % 5, to_pos // 5
-
-        # Must be orthogonal (same row or same column)
-        if from_col != to_col and from_row != to_row:
-            return False
-
-        # Check the cell in between
-        mid_col = (from_col + to_col) // 2
-        mid_row = (from_row + to_row) // 2
-        mid_pos = mid_row * 5 + mid_col
-
-        mid_card = self.board.get_card(mid_pos)
-        # Can go through empty or friendly, not through enemy
-        if mid_card is not None and mid_card.player != player:
-            return False
-
-        return True
 
     def _get_distance(self, pos1: int, pos2: int) -> int:
         """Get Manhattan distance between two positions (horizontal + vertical, no diagonal)."""
@@ -998,18 +946,22 @@ class Game:
 
     def select_ability_target(self, pos: int) -> bool:
         """Select a target for the pending ability."""
-        if not self.pending_ability or not self.pending_ability_card:
+        if not self.awaiting_ability_target:
             return False
 
-        if pos not in self.valid_ability_targets:
+        if not self.interaction.can_select_position(pos):
             return False
 
         target = self.board.get_card(pos)
         if not target:
             return False
 
-        card = self.pending_ability_card
-        result = self._execute_ability(card, self.pending_ability, target)
+        card = self.interaction.actor
+        ability = self.interaction.context.get('ability')
+        if not ability:
+            return False
+
+        result = self._execute_ability(card, ability, target)
         self.cancel_ability()
 
         # Clear actions if card is now tapped
@@ -1019,8 +971,18 @@ class Game:
 
         return result
 
+    @property
+    def awaiting_ability_target(self) -> bool:
+        """Check if waiting for ability target selection."""
+        return self.interaction is not None and self.interaction.kind == InteractionKind.SELECT_ABILITY_TARGET
+
     def _execute_ability(self, card: Card, ability: Ability, target: Card) -> bool:
         """Execute an ability on a target."""
+        # Check for registered handler first
+        handler = get_handler(ability.id)
+        if handler:
+            return handler(self, card, target, ability)
+
         # Heal
         if ability.heal_amount > 0:
             # Emit heal arrow (only if targeting another card)
@@ -1032,173 +994,9 @@ class Game:
             self.emit_clear_arrows()
 
         # Damage (for ranged attacks with ranged_damage)
-        if ability.ranged_damage and not ability.id.startswith("lunge"):
+        if ability.ranged_damage:
             # Use ranged attack with ability's damage values
             return self._ranged_attack(card, target, ability)
-
-        # Lunge attack (fixed damage, no counter)
-        if ability.id.startswith("lunge"):
-            return self._lunge_attack(card, target, ability)
-
-        # Powerful blow (bonus damage attack)
-        if ability.id == "powerful_blow":
-            return self._powerful_attack(card, target, ability.damage_amount)
-
-        # Magical strike (fixed damage, ignores reductions)
-        if ability.id == "magical_strike":
-            return self._magical_strike(card, target, ability.damage_amount)
-
-        # Inspire (buff ally)
-        if ability.id == "inspire":
-            target.temp_attack_bonus += ability.bonus_attack
-            self.log(f"{card.name} воодушевляет {target.name} (+{ability.bonus_attack} к атаке)")
-            card.tap()
-            card.put_ability_on_cooldown(ability.id, ability.cooldown)
-            return True
-
-        # Web throw (apply web status)
-        if ability.id == "web_throw":
-            self.emit_arrow(card.position, target.position, 'attack')
-            target.webbed = True
-            self.log(f"{card.name} опутывает {target.name} паутиной!")
-            self.emit_clear_arrows()
-            card.tap()
-            card.put_ability_on_cooldown(ability.id, ability.cooldown)
-            return True
-
-        # Gain counter (for discharge)
-        if ability.id == "gain_counter":
-            if card.max_counters > 0 and card.counters >= card.max_counters:
-                self.log(f"{card.name}: максимум фишек ({card.max_counters})")
-                return False
-            card.counters += 1
-            self.log(f"{card.name} получает фишку ({card.counters}/{card.max_counters})")
-            card.tap()
-            return True
-
-        # Борг: tap to gain counter (max 1)
-        if ability.id == "borg_counter":
-            if card.counters >= 1:
-                self.log(f"{card.name}: уже есть фишка")
-                return False
-            card.counters += 1
-            self.log(f"{card.name} разбегается (фишка: {card.counters})")
-            card.tap()
-            return True
-
-        # Борг: spend counter for 3 damage + stun
-        if ability.id == "borg_strike":
-            if card.counters < 1:
-                self.log(f"{card.name}: нужна фишка")
-                return False
-            if not target:
-                self.log(f"{card.name}: нет цели")
-                return False
-
-            card.counters -= 1
-            damage = ability.damage_amount  # Fixed 3 damage
-            self.emit_arrow(card.position, target.position, 'attack')
-
-            # If target is tapped, stun it (won't untap next turn)
-            if target.tapped:
-                target.stunned = True
-                self.log(f"{card.name} бьёт рогами {target.name}: {damage} урона + оглушение!")
-            else:
-                self.log(f"{card.name} бьёт рогами {target.name}: {damage} урона")
-
-            dealt, webbed = self._deal_damage(target, damage)
-            self.emit_clear_arrows()
-            self._handle_death(target, card)
-            card.tap()
-            self._check_winner()
-            return True
-
-        # Axe tap: tap to gain a counter
-        if ability.id == "axe_tap":
-            if card.max_counters == 0 or card.counters < card.max_counters:
-                card.counters += 1
-                self.log(f"{card.name} кует: +1 фишка ({card.counters})")
-            else:
-                self.log(f"{card.name}: максимум фишек")
-            card.tap()
-            return True
-
-        # Axe strike: magical strike with counter-based damage (0-1-2 + counters spent)
-        if ability.id == "axe_strike":
-            counters_spent = self.selected_counters
-            if counters_spent < 0 or counters_spent > card.counters:
-                self.log(f"{card.name}: недостаточно фишек")
-                return False
-
-            # Roll for tier (like regular attack)
-            roll = self.roll_dice()
-            tier = self._get_attack_tier(roll)
-            tier_names = ["слабый", "средний", "сильный"]
-            base_damage = [0, 1, 2][tier]  # Base 0-1-2
-            total_damage = base_damage + counters_spent
-
-            card.counters -= counters_spent
-            self.emit_arrow(card.position, target.position, 'attack')
-            self.log(f"{card.name} маг. удар ({tier_names[tier]}, кубик {roll}): {base_damage}+{counters_spent} фишек = {total_damage}")
-
-            # Set last_combat to display dice roll
-            self.last_combat = CombatResult(
-                attacker_roll=roll,
-                defender_roll=0,
-                attacker_damage_dealt=total_damage,
-                defender_damage_dealt=0,
-                attacker_name=card.name,
-                defender_name=target.name
-            )
-
-            # Check magic immunity
-            if target.has_ability("magic_immune"):
-                self.log(f"  -> {target.name} защита от магии!")
-                self.emit_clear_arrows()
-                card.tap()
-                return True
-
-            self._deal_damage(target, total_damage, is_magical=True)
-            self.emit_clear_arrows()
-            self._handle_death(target, card)
-            card.tap()
-
-            # Clear counter selection state
-            self.counter_selection_card = None
-            self.counter_selection_ability = None
-            self.selected_counters = 0
-
-            self._check_winner()
-            return True
-
-        # Discharge (deal damage based on counters)
-        if ability.id == "discharge":
-            base_damage = ability.damage_amount
-            bonus_damage = card.counters * 3  # +3 per counter
-            total_damage = base_damage + bonus_damage
-            self.emit_arrow(card.position, target.position, 'attack')
-
-            # Always lose a фишка when discharging
-            if card.counters > 0:
-                card.counters -= 1
-
-            # Check for discharge immunity
-            if target.has_ability("magic_immune") or target.has_ability("discharge_immune"):
-                self.log(f"{card.name} разряд на {target.name}: защита от разрядов!")
-                self.log(f"  [Осталось фишек: {card.counters}]")
-                self.emit_clear_arrows()
-                card.tap()
-                return True
-
-            dealt, webbed = self._deal_damage(target, total_damage, is_magical=True)
-            if not webbed:
-                self.log(f"{card.name} разряд на {target.name}: {total_damage} урона ({base_damage}+{bonus_damage})")
-                self.log(f"  [Осталось фишек: {card.counters}]")
-            self.emit_clear_arrows()
-            self._handle_death(target, card)
-            card.tap()
-            self._check_winner()
-            return True
 
         # Generic active ability - tap and cooldown
         if ability.ability_type == AbilityType.ACTIVE and ability.heal_amount > 0:
@@ -1234,15 +1032,14 @@ class Game:
         for ability_id in card.stats.ability_ids:
             ability = get_ability(ability_id)
             if ability and ability.ability_type == AbilityType.PASSIVE:
-                if ability.id == "attack_exp":
-                    bonus += ability.bonus_attack
-                # OVA+1: always +1 to attack dice
-                elif ability.id == "ova_1":
-                    bonus += ability.bonus_attack
-                # Note: anti_magic gives +1 damage, not dice bonus - handled in _get_attack_bonus
-                # Edge column attack: +1 ОвА on flanks (columns 0 or 4)
-                elif ability.id == "edge_column_attack" and col in (0, 4):
-                    bonus += 1
+                # Add dice_bonus_attack from any passive ability that has it
+                if ability.dice_bonus_attack > 0:
+                    # Edge column attack only applies on flanks (columns 0 or 4)
+                    if ability.id == "edge_column_attack":
+                        if col in (0, 4):
+                            bonus += ability.dice_bonus_attack
+                    else:
+                        bonus += ability.dice_bonus_attack
         return bonus
 
     def _get_defense_dice_bonus(self, card: Card) -> int:
@@ -1252,11 +1049,9 @@ class Game:
         for ability_id in card.stats.ability_ids:
             ability = get_ability(ability_id)
             if ability and ability.ability_type == AbilityType.PASSIVE:
-                if ability.id == "defense_exp":
-                    bonus += ability.bonus_attack  # Reusing bonus_attack field
-                # OVZ+1: always +1 to defense dice
-                elif ability.id == "ovz_1":
-                    bonus += ability.bonus_attack
+                # Add dice_bonus_defense from any passive ability that has it
+                if ability.dice_bonus_defense > 0:
+                    bonus += ability.dice_bonus_defense
                 # Center column defense: +1 ОвЗ in center (column 2)
                 elif ability.id == "center_column_defense" and col == 2:
                     bonus += 1
@@ -1368,10 +1163,10 @@ class Game:
             ability = get_ability(ability_id)
             if ability:
                 # Check for OVA (attack dice bonus) - permanent abilities
-                if ability.bonus_attack > 0:
+                if ability.dice_bonus_attack > 0:
                     return True
-                # Check for permanent OVZ (defense dice bonus)
-                if ability.id in ("defense_exp", "ovz_1"):
+                # Check for OVZ (defense dice bonus) - permanent abilities
+                if ability.dice_bonus_defense > 0:
                     return True
                 # Check for formation-based OVZ - only counts if card is in formation
                 if ability.formation_dice_bonus > 0 and card.in_formation:
@@ -1400,19 +1195,18 @@ class Game:
                     return True
         return False
 
-    def _process_defender_triggers(self, defender: Card):
+    def _process_defender_triggers(self, defender: Card, attacker: Card = None):
         """Process ON_DEFEND triggered abilities when card becomes a defender."""
+        ctx = {'attacker': attacker}
         for ability_id in defender.stats.ability_ids:
             ability = get_ability(ability_id)
             if not ability or ability.trigger != AbilityTrigger.ON_DEFEND:
                 continue
 
-            # defender_buff: +2 attack and +1 dice bonus (lasts until end of owner's next turn)
-            if ability.id == "defender_buff":
-                defender.defender_buff_attack = ability.bonus_attack  # +2
-                defender.defender_buff_dice = 1  # ОвА+1
-                defender.defender_buff_turns = 1  # Lasts through 1 owner turn-end
-                self.log(f"  -> {defender.name}: +{ability.bonus_attack} к удару, ОвА+1 (до конца след. хода)")
+            # Try registered trigger handler first
+            handler = get_trigger_handler(ability_id)
+            if handler:
+                handler(self, defender, ability, ctx)
 
     def _process_counter_shot(self, attacker: Card, original_target: Card):
         """Process counter_shot ability - enter targeting mode for ranged shot."""
@@ -1439,17 +1233,23 @@ class Game:
         if not valid_targets:
             return
 
-        # Enter counter shot targeting mode
-        self.pending_counter_shot = attacker
-        self.counter_shot_targets = valid_targets
+        # Enter counter shot targeting mode using unified Interaction
+        self.interaction = Interaction(
+            kind=InteractionKind.SELECT_COUNTER_SHOT,
+            actor=attacker,
+            valid_positions=valid_targets,
+        )
         self.log(f"{attacker.name}: выберите цель для выстрела")
 
     def select_counter_shot_target(self, pos: int) -> bool:
         """Player selects target for counter shot."""
-        if not self.pending_counter_shot or pos not in self.counter_shot_targets:
+        if not self.awaiting_counter_shot:
             return False
 
-        attacker = self.pending_counter_shot
+        if not self.interaction.can_select_position(pos):
+            return False
+
+        attacker = self.interaction.actor
         target = self.board.get_card(pos)
 
         if not target:
@@ -1470,19 +1270,18 @@ class Game:
             self._handle_death(target, attacker)
             self._check_winner()
 
-        self.pending_counter_shot = None
-        self.counter_shot_targets = []
+        self.interaction = None
         return True
 
     @property
     def awaiting_counter_shot(self) -> bool:
         """Check if waiting for counter shot target selection."""
-        return self.pending_counter_shot is not None
+        return self.interaction is not None and self.interaction.kind == InteractionKind.SELECT_COUNTER_SHOT
 
     @property
     def awaiting_movement_shot(self) -> bool:
         """Check if waiting for movement shot target selection."""
-        return self.pending_movement_shot is not None
+        return self.interaction is not None and self.interaction.kind == InteractionKind.SELECT_MOVEMENT_SHOT
 
     def _process_movement_shot(self, card: Card):
         """Process movement_shot ability - check for adjacent expensive ally and offer shot."""
@@ -1522,17 +1321,23 @@ class Game:
         if not valid_targets:
             return
 
-        # Enter movement shot targeting mode (optional)
-        self.pending_movement_shot = card
-        self.movement_shot_targets = valid_targets
+        # Enter movement shot targeting mode using unified Interaction (optional shot)
+        self.interaction = Interaction(
+            kind=InteractionKind.SELECT_MOVEMENT_SHOT,
+            actor=card,
+            valid_positions=valid_targets,
+        )
         self.log(f"{card.name}: можно выстрелить (необязательно)")
 
     def select_movement_shot_target(self, pos: int) -> bool:
         """Player selects target for movement shot."""
-        if not self.pending_movement_shot or pos not in self.movement_shot_targets:
+        if not self.awaiting_movement_shot:
             return False
 
-        shooter = self.pending_movement_shot
+        if not self.interaction.can_select_position(pos):
+            return False
+
+        shooter = self.interaction.actor
         target = self.board.get_card(pos)
 
         if not target:
@@ -1551,16 +1356,15 @@ class Game:
             self._handle_death(target, shooter)
             self._check_winner()
 
-        self.pending_movement_shot = None
-        self.movement_shot_targets = []
+        self.interaction = None
         return True
 
     def skip_movement_shot(self):
         """Skip the movement shot opportunity."""
-        if self.pending_movement_shot:
-            self.log(f"{self.pending_movement_shot.name}: выстрел пропущен")
-            self.pending_movement_shot = None
-            self.movement_shot_targets = []
+        if self.awaiting_movement_shot:
+            shooter = self.interaction.actor
+            self.log(f"{shooter.name}: выстрел пропущен")
+            self.interaction = None
 
     def _process_heal_on_attack(self, attacker: Card, target: Card):
         """Process heal_on_attack ability - prompt for optional heal."""
@@ -1589,15 +1393,21 @@ class Game:
         # Only offer heal if attacker is damaged
         if attacker.curr_life >= attacker.life:
             return
-        # Enter heal confirmation mode
-        self.pending_heal_confirm = (attacker, heal_amount)
+        # Enter heal confirmation mode using unified Interaction
+        self.interaction = Interaction(
+            kind=InteractionKind.CONFIRM_HEAL,
+            actor=attacker,
+            amount=heal_amount,
+            context={'front_card': front_card.name},
+        )
         self.log(f"{attacker.name}: лечиться на {heal_amount}? (напротив: {front_card.name})")
 
     def confirm_heal_on_attack(self, accept: bool) -> bool:
         """Player confirms or declines optional heal."""
-        if not self.pending_heal_confirm:
+        if not self.awaiting_heal_confirm:
             return False
-        attacker, heal_amount = self.pending_heal_confirm
+        attacker = self.interaction.actor
+        heal_amount = self.interaction.amount
         if accept and attacker.is_alive:
             healed = attacker.heal(heal_amount)
             if healed > 0:
@@ -1605,26 +1415,26 @@ class Game:
                 self.log(f"  -> {attacker.name} +{healed} HP")
         else:
             self.log(f"  -> {attacker.name} отказался от лечения")
-        self.pending_heal_confirm = None
+        self.interaction = None
         return True
 
     @property
     def awaiting_heal_confirm(self) -> bool:
         """Check if waiting for heal confirmation."""
-        return self.pending_heal_confirm is not None
+        return self.interaction is not None and self.interaction.kind == InteractionKind.CONFIRM_HEAL
 
-    def _process_hellish_stench(self, attacker: Card, target: Card, was_target_tapped: bool, damage_dealt: int):
+    def _process_hellish_stench(self, attacker: Card, target: Card, was_target_tapped: bool, attack_hit: bool):
         """Process hellish_stench ability - target must tap or take 2 damage.
 
-        Only triggers if attacker dealt at least some damage (weak attack or better).
+        Triggers if the attack hit (didn't miss), even if damage was reduced to 0.
         """
         if "hellish_stench" not in attacker.stats.ability_ids:
             return
         # Only triggers when attacking an untapped (open) creature
         if was_target_tapped:
             return
-        # Only triggers if damage was actually dealt
-        if damage_dealt <= 0:
+        # Only triggers if the attack hit (not a miss)
+        if not attack_hit:
             return
         if not target.is_alive or target.position is None:
             return
@@ -1635,16 +1445,23 @@ class Game:
         ability = get_ability("hellish_stench")
         damage = ability.damage_amount if ability else 2
 
-        # Enter stench choice mode - target's controller must choose
-        self.pending_stench_choice = (attacker, target, damage)
+        # Enter stench choice mode using unified Interaction
+        self.interaction = Interaction(
+            kind=InteractionKind.CHOOSE_STENCH,
+            actor=attacker,
+            target=target,
+            amount=damage,
+        )
         self.log(f"{attacker.name}: Адское зловоние! {target.name} закрывается или получает {damage} урона")
 
     def resolve_stench_choice(self, tap: bool) -> bool:
         """Target's controller chooses: tap or take damage."""
-        if not self.pending_stench_choice:
+        if not self.awaiting_stench_choice:
             return False
 
-        attacker, target, damage = self.pending_stench_choice
+        attacker = self.interaction.actor
+        target = self.interaction.target
+        damage = self.interaction.amount
 
         if tap:
             # Target chooses to tap
@@ -1657,13 +1474,32 @@ class Game:
             self._handle_death(target, attacker)
             self._check_winner()
 
-        self.pending_stench_choice = None
+        self.interaction = None
         return True
 
     @property
     def awaiting_stench_choice(self) -> bool:
         """Check if waiting for stench choice."""
-        return self.pending_stench_choice is not None
+        return self.interaction is not None and self.interaction.kind == InteractionKind.CHOOSE_STENCH
+
+    @property
+    def awaiting_exchange_choice(self) -> bool:
+        """Check if waiting for exchange choice."""
+        return self.interaction is not None and self.interaction.kind == InteractionKind.CHOOSE_EXCHANGE
+
+    @property
+    def awaiting_defender(self) -> bool:
+        """Check if waiting for defender selection."""
+        return self.interaction is not None and self.interaction.kind == InteractionKind.SELECT_DEFENDER
+
+    @property
+    def has_blocking_interaction(self) -> bool:
+        """Check if any popup/decision is blocking normal actions."""
+        return (self.awaiting_counter_selection or self.awaiting_heal_confirm or
+                self.awaiting_stench_choice or self.awaiting_exchange_choice or
+                self.awaiting_defender or self.awaiting_valhalla or
+                self.awaiting_counter_shot or self.awaiting_movement_shot or
+                self.awaiting_ability_target or self.priority_phase)
 
     def _lunge_attack(self, attacker: Card, target: Card, ability: Ability) -> bool:
         """Execute a lunge attack (fixed damage, no counter)."""
@@ -1796,49 +1632,6 @@ class Game:
         self._check_winner()
         return True
 
-    def _powerful_attack(self, attacker: Card, target: Card, bonus_damage: int) -> bool:
-        """Execute a powerful melee attack with bonus damage."""
-        if target.position not in self.board.get_adjacent_cells(attacker.position, True):
-            self.log("Цель слишком далеко!")
-            return False
-
-        self.log(f"{attacker.name} наносит мощный удар!")
-
-        # If webbed, skip dice rolls entirely
-        if target.webbed:
-            dealt, _ = self._deal_damage(target, 0)  # Just triggers web removal
-            self.last_combat = CombatResult(0, 0, 0, 0, attacker_name=attacker.name, defender_name=target.name)
-        else:
-            atk_roll = self.roll_dice()
-            def_roll = self.roll_dice() if not target.tapped else 0
-            roll_diff = atk_roll - def_roll
-            dmg_to_def, dmg_to_atk = self.calculate_damage(roll_diff, attacker, target, not target.tapped, atk_roll)
-            dmg_to_def += bonus_damage
-
-            dealt, _ = self._deal_damage(target, dmg_to_def)
-            attacker.take_damage(dmg_to_atk)
-            self.emit_damage(attacker.position, dmg_to_atk)
-
-            self.last_combat = CombatResult(atk_roll, def_roll, dealt, dmg_to_atk, attacker_name=attacker.name, defender_name=target.name)
-            self.log(f"  [{atk_roll}] vs [{def_roll}]")
-            if dealt > 0:
-                self.log(f"  -> {target.name} получил {dealt} урона")
-            if dmg_to_atk > 0:
-                self.log(f"  -> {attacker.name} получил {dmg_to_atk} урона")
-
-        self._handle_death(target, attacker)
-        if self._handle_death(attacker, target):
-            self.deselect_card()
-        else:
-            attacker.tap()
-            attacker.put_ability_on_cooldown("powerful_blow", 2)
-            self.valid_moves = []
-            self.valid_attacks = []
-            self.attack_mode = False
-
-        self._check_winner()
-        return True
-
     def _magical_strike(self, attacker: Card, target: Card, damage: int) -> bool:
         """Execute magical strike (fixed damage, ignores reductions and armor)."""
         self.emit_arrow(attacker.position, target.position, 'magic')
@@ -1866,9 +1659,8 @@ class Game:
 
     def cancel_ability(self):
         """Cancel pending ability targeting."""
-        self.pending_ability = None
-        self.pending_ability_card = None
-        self.valid_ability_targets = []
+        if self.awaiting_ability_target:
+            self.interaction = None
         # Also cancel counter selection if active
         self.awaiting_counter_selection = False
         self.counter_selection_card = None
@@ -1905,9 +1697,13 @@ class Game:
             self.cancel_ability()
             return False
 
-        self.pending_ability = ability
-        self.pending_ability_card = card
-        self.valid_ability_targets = targets
+        # Enter ability targeting using unified Interaction
+        self.interaction = Interaction(
+            kind=InteractionKind.SELECT_ABILITY_TARGET,
+            actor=card,
+            valid_positions=targets,
+            context={'ability': ability},
+        )
         self.log(f"Выберите цель для {ability.name} ({self.selected_counters} фишек)")
         return True
 
@@ -1932,7 +1728,7 @@ class Game:
 
         result = []
         for card in self.board.get_all_cards(player):
-            if not card.is_alive or card.tapped:
+            if not card.is_alive or card.tapped or card.webbed:
                 continue
             # Skip cards already on the stack
             if card.id in card_ids_on_stack:
@@ -2048,6 +1844,11 @@ class Game:
                 self.log(f"  -> {card.name}: Нет броска защитника для изменения")
                 return
 
+            # Check if defender roll is 0 (tapped defender - no roll to modify)
+            if target == 'def' and self.pending_dice_roll.get('def_roll', 0) == 0:
+                self.log(f"  -> {card.name}: Защитник закрыт - нет броска для изменения")
+                return
+
             if target == 'atk':
                 target_name = self.pending_dice_roll['attacker'].name
             else:
@@ -2130,8 +1931,8 @@ class Game:
         # Clear previous dice display
         self.last_combat = None
 
-        # Block during priority phase
-        if self.priority_phase:
+        # Block during any popup/decision state
+        if self.has_blocking_interaction:
             return False
 
         # Block movement during forced attack
@@ -2164,6 +1965,17 @@ class Game:
 
             # Check for movement_shot ability trigger
             self._process_movement_shot(card)
+
+            # Check for forced attack after movement (must_attack_tapped ability)
+            self._update_forced_attackers()
+            forced_targets = self.get_forced_attacker_card(card)
+            if forced_targets:
+                # Card moved next to tapped enemy - must attack
+                self.log(f"{card.name} должен атаковать закрытого врага!")
+                self.valid_moves = []
+                self.valid_attacks = forced_targets
+                self.attack_mode = True
+                return True
 
             # Keep card selected but refresh valid moves
             self.valid_moves = self.board.get_valid_moves(card) if card.can_act else []
@@ -2266,21 +2078,31 @@ class Game:
         return modifier
 
     def get_display_attack(self, card: Card) -> Tuple[int, int, int]:
-        """Get attack values for display, including all flat bonuses.
+        """Get attack values for display, including all bonuses.
 
-        This includes: base attack, temp bonuses, defender buff, formation bonus.
-        Does NOT include tier-specific bonuses (like edge column +1 to medium/strong).
+        This includes: base attack, temp bonuses, defender buff, formation bonus,
+        and position-based bonuses (like edge column +1 to medium/strong).
         """
         base = card.get_effective_attack()  # Already includes temp_attack_bonus and defender_buff
 
-        # Add formation attack bonus
-        formation_bonus = 0
+        # Add formation attack bonus and positional bonuses per tier
+        bonuses = [0, 0, 0]  # weak, medium, strong
+        col = self._get_card_column(card)
+
         for ability_id in card.stats.ability_ids:
             ability = get_ability(ability_id)
-            if ability and ability.is_formation and card.in_formation:
-                formation_bonus += ability.formation_attack_bonus
+            if ability:
+                # Formation attack bonus (all tiers)
+                if ability.is_formation and card.in_formation:
+                    for i in range(3):
+                        bonuses[i] += ability.formation_attack_bonus
 
-        return (base[0] + formation_bonus, base[1] + formation_bonus, base[2] + formation_bonus)
+                # Edge columns: +1 to medium and strong strikes only
+                if ability_id == "edge_column_attack" and col in (0, 4):
+                    bonuses[1] += 1  # medium
+                    bonuses[2] += 1  # strong
+
+        return (base[0] + bonuses[0], base[1] + bonuses[1], base[2] + bonuses[2])
 
     def calculate_damage_with_tier(self, roll_diff: int, attacker: Card, defender: Card,
                                    defender_can_counter: bool, atk_roll: int = 0) -> Tuple[int, int, str, str, int, int, bool]:
@@ -2328,8 +2150,8 @@ class Game:
         # Clear previous dice display
         self.last_combat = None
 
-        # Block during priority phase
-        if self.priority_phase:
+        # Block during any popup/decision state
+        if self.has_blocking_interaction:
             return False
 
         if not self.selected_card or target_pos not in self.valid_attacks:
@@ -2375,12 +2197,12 @@ class Game:
             valid_defenders = self.board.get_valid_defenders(attacker, target)
 
         if valid_defenders:
-            # Enter defender choice mode
-            self.awaiting_defender = True
-            self.pending_attack = PendingAttack(
-                attacker=attacker,
-                original_target=target,
-                valid_defenders=valid_defenders
+            # Enter defender choice mode using unified Interaction
+            self.interaction = Interaction(
+                kind=InteractionKind.SELECT_DEFENDER,
+                actor=attacker,
+                target=target,
+                valid_cards=valid_defenders,
             )
             self.log(f"{attacker.name} атакует {target.name}!")
             self.log(f"Игрок {target.player}: выберите защитника")
@@ -2391,21 +2213,20 @@ class Game:
 
     def choose_defender(self, defender: Card) -> bool:
         """Defender player chooses to intercept with this card."""
-        if not self.awaiting_defender or not self.pending_attack:
+        if not self.awaiting_defender:
             return False
 
-        if defender not in self.pending_attack.valid_defenders:
+        if not self.interaction.can_select_card(defender):
             return False
 
-        attacker = self.pending_attack.attacker
+        attacker = self.interaction.actor
         self.log(f"{defender.name} перехватывает атаку!")
 
         # Trigger ON_DEFEND abilities before combat
-        self._process_defender_triggers(defender)
+        self._process_defender_triggers(defender, attacker)
 
         # Clear defender state
-        self.awaiting_defender = False
-        self.pending_attack = None
+        self.interaction = None
 
         # Resolve combat with the intercepting defender
         result = self._resolve_combat(attacker, defender)
@@ -2419,16 +2240,15 @@ class Game:
 
     def skip_defender(self) -> bool:
         """Defender player chooses not to intercept."""
-        if not self.awaiting_defender or not self.pending_attack:
+        if not self.awaiting_defender:
             return False
 
-        attacker = self.pending_attack.attacker
-        target = self.pending_attack.original_target
+        attacker = self.interaction.actor
+        target = self.interaction.target
         self.log("Защита не выставлена.")
 
         # Clear defender state
-        self.awaiting_defender = False
-        self.pending_attack = None
+        self.interaction = None
 
         # Resolve combat with original target
         return self._resolve_combat(attacker, target)
@@ -2521,12 +2341,16 @@ class Game:
 
             # Check for exchange situation (skip if already resolved)
             if is_exchange and not force_reduced and not self.awaiting_exchange_choice and not dice_context.get('exchange_resolved'):
-                # Enter exchange choice state
-                self.awaiting_exchange_choice = True
-                self.exchange_context = dice_context.copy()
-                # Store who chooses (player with higher roll)
-                self.exchange_context['attacker_advantage'] = roll_diff > 0
-                self.exchange_context['roll_diff'] = roll_diff
+                # Enter exchange choice state using unified Interaction
+                exchange_ctx = dice_context.copy()
+                exchange_ctx['attacker_advantage'] = roll_diff > 0
+                exchange_ctx['roll_diff'] = roll_diff
+                self.interaction = Interaction(
+                    kind=InteractionKind.CHOOSE_EXCHANGE,
+                    actor=attacker,
+                    target=defender,
+                    context=exchange_ctx,
+                )
                 tier_names = ["слабая", "средняя", "сильная"]
 
                 if roll_diff > 0:
@@ -2632,9 +2456,10 @@ class Game:
         if attacker.is_alive:
             self._process_heal_on_attack(attacker, defender)
 
-        # Process hellish_stench (only triggers vs untapped targets and if damage was dealt)
+        # Process hellish_stench (triggers vs untapped targets if attack hit, even if 0 damage)
         if attacker.is_alive and defender.is_alive:
-            self._process_hellish_stench(attacker, defender, defender_was_tapped, dealt)
+            attack_hit = atk_tier >= 0  # Hit if tier is weak(0), medium(1), or strong(2)
+            self._process_hellish_stench(attacker, defender, defender_was_tapped, attack_hit)
 
         # Handle deaths
         self._handle_death(defender, attacker)
@@ -2672,13 +2497,12 @@ class Game:
             reduce_damage: True to reduce attack tier and avoid counter,
                           False to deal full damage but take counter
         """
-        if not self.awaiting_exchange_choice or not self.exchange_context:
+        if not self.awaiting_exchange_choice:
             return False
 
-        dice_context = self.exchange_context
+        dice_context = self.interaction.context
         dice_context['exchange_resolved'] = True  # Mark that exchange was handled
-        self.awaiting_exchange_choice = False
-        self.exchange_context = None
+        self.interaction = None
 
         if reduce_damage:
             self.log("Выбрано: ослабить удар")
@@ -2704,14 +2528,19 @@ class Game:
 
         # Clear optional movement shot if pending
         if self.awaiting_movement_shot:
-            self.pending_movement_shot = None
-            self.movement_shot_targets = []
+            self.interaction = None
 
         self.deselect_card()
 
         # Tick defender buff duration for current player's cards (expires at end of their turn)
         for card in self.board.get_all_cards(player=self.current_player):
             card.tick_defender_buff()
+
+        # Remove web status from current player's cards at end of their turn
+        for card in self.board.get_all_cards(player=self.current_player):
+            if card.webbed:
+                card.webbed = False
+                self.log(f"{card.name} освобождается от паутины")
 
         # Switch player
         if self.current_player == 1:
@@ -2735,38 +2564,58 @@ class Game:
                 return self.place_card_from_hand(hand[0], pos)
             return False
 
+        # During priority phase, allow selecting cards with instant abilities
+        if self.priority_phase:
+            card = self.board.get_card(pos)
+            if card and card.player == self.priority_player and not card.webbed:
+                # Check if card has usable instant abilities
+                has_usable_instant = any(
+                    get_ability(aid) and get_ability(aid).is_instant and card.can_use_ability(aid)
+                    for aid in card.stats.ability_ids
+                )
+                if has_usable_instant:
+                    return self.select_card(pos)
+            # During priority, don't process other clicks - must pass or use instant
+            return False
+
+        # Block all clicks during popup states that don't allow board interaction
+        if self.awaiting_counter_selection or self.awaiting_heal_confirm:
+            return False
+        if self.awaiting_stench_choice or self.awaiting_exchange_choice:
+            return False
+
         # Handle counter shot target selection mode
         if self.awaiting_counter_shot:
-            if pos in self.counter_shot_targets:
+            if self.interaction.can_select_position(pos):
                 return self.select_counter_shot_target(pos)
             # Clicking elsewhere does nothing during counter shot selection
             return False
 
         # Handle movement shot target selection (use skip button to skip)
         if self.awaiting_movement_shot:
-            if pos in self.movement_shot_targets:
+            if self.interaction.can_select_position(pos):
                 return self.select_movement_shot_target(pos)
             # Clicking elsewhere does nothing - must use skip button
             return False
 
         # Handle Valhalla target selection mode
         if self.awaiting_valhalla:
-            if pos in self.valhalla_targets:
+            if self.interaction.can_select_position(pos):
                 return self.select_valhalla_target(pos)
             # Clicking elsewhere does nothing during Valhalla selection
             return False
 
         # Handle defender choice mode
-        if self.awaiting_defender and self.pending_attack:
+        if self.awaiting_defender:
             card = self.board.get_card(pos)
-            if card and card in self.pending_attack.valid_defenders:
+            if card and self.interaction.can_select_card(card):
                 return self.choose_defender(card)
             # Clicking elsewhere does nothing during defender choice
             return False
 
         # Handle ability target selection mode
-        if self.pending_ability and self.pending_ability_card:
-            if pos in self.valid_ability_targets:
+        if self.awaiting_ability_target:
+            if self.interaction.can_select_position(pos):
                 return self.select_ability_target(pos)
             # Clicking elsewhere cancels ability
             self.cancel_ability()

@@ -37,6 +37,20 @@ class TargetType(Enum):
     NONE = auto()
 
 
+class EffectType(Enum):
+    """Data-driven effect types for simple abilities."""
+    NONE = auto()              # No automatic effect (needs custom handler)
+    HEAL_TARGET = auto()       # Heal target by heal_amount
+    HEAL_SELF = auto()         # Heal self by heal_amount
+    FULL_HEAL_SELF = auto()    # Heal self to max HP
+    BUFF_ATTACK = auto()       # Add damage_bonus to target's temp_attack_bonus
+    BUFF_RANGED = auto()       # Add damage_bonus to card's temp_ranged_bonus
+    BUFF_DICE = auto()         # Add dice_bonus_attack to target's temp_dice_bonus
+    GRANT_DIRECT = auto()      # Set card's has_direct = True
+    GAIN_COUNTER = auto()      # Increment card's counters by 1
+    APPLY_WEBBED = auto()      # Set target's webbed = True
+
+
 @dataclass
 class Ability:
     """Base ability definition."""
@@ -50,13 +64,23 @@ class Ability:
     cooldown: int = 0          # Turns between uses (0 = no cooldown)
     trigger: Optional[AbilityTrigger] = None
 
+    # Data-driven effect type (for simple abilities without custom handlers)
+    effect_type: EffectType = EffectType.NONE
+
     # For active abilities with simple effects
     heal_amount: int = 0
     damage_amount: int = 0
-    bonus_attack: int = 0      # Added to attack rolls
     ranged_damage: Optional[Tuple[int, int, int]] = None  # Custom damage for ranged (weak, med, strong)
     ranged_type: str = "shot"  # "shot" (Выстрел) or "throw" (Метание)
     grants_direct: bool = False  # Ranged ignores defenders
+
+    # Dice and damage bonuses (explicit fields replacing overloaded bonus_attack)
+    dice_bonus_attack: int = 0   # ОвА - added to attack dice roll
+    dice_bonus_defense: int = 0  # ОвЗ - added to defense dice roll
+    damage_bonus: int = 0        # Flat damage bonus to attacks
+
+    # DEPRECATED: Use dice_bonus_attack, dice_bonus_defense, or damage_bonus instead
+    bonus_attack: int = 0
 
     # For defensive passives
     damage_reduction: int = 0  # Reduce incoming damage by this amount
@@ -84,6 +108,27 @@ class Ability:
     requires_elite_ally: bool = False    # Only active when in formation with elite ally
     requires_common_ally: bool = False   # Only active when in formation with common ally
 
+    # =============================================================================
+    # PRECONDITIONS - declarative checks for ability activation
+    # =============================================================================
+
+    # Counter preconditions
+    requires_counters: int = 0           # Minimum counters needed to use ability
+    spends_counters: bool = False        # If true, ability consumes counters (amount = requires_counters)
+
+    # Position preconditions (for card using ability)
+    requires_own_row: int = 0            # Must be in this row (1=front, 2=middle, 3=back), 0=any
+    requires_edge_column: bool = False   # Must be in column 0 or 4 (flanks)
+    requires_center_column: bool = False # Must be in column 2 (center)
+
+    # Target preconditions
+    target_must_be_tapped: bool = False  # Target must be tapped/closed
+    target_not_flying: bool = False      # Target cannot be flying (for web_throw)
+
+    # Card state preconditions
+    requires_damaged: bool = False       # Card must be damaged (curr_life < life)
+    requires_formation: bool = False     # Card must be in formation (for triggered abilities)
+
 
 # =============================================================================
 # PREDEFINED ABILITIES
@@ -95,6 +140,7 @@ ABILITY_HEAL_SELF = Ability(
     description="Восстановить 3 здоровья",
     ability_type=AbilityType.ACTIVE,
     target_type=TargetType.SELF,
+    effect_type=EffectType.HEAL_SELF,
     heal_amount=3,
 )
 
@@ -105,6 +151,7 @@ ABILITY_HEAL_ALLY = Ability(
     ability_type=AbilityType.ACTIVE,
     target_type=TargetType.ANY,
     range=99,  # No range limit for воздействие
+    effect_type=EffectType.HEAL_TARGET,
     heal_amount=2,
 )
 
@@ -115,6 +162,7 @@ ABILITY_HEAL_1 = Ability(
     ability_type=AbilityType.ACTIVE,
     target_type=TargetType.ANY,
     range=99,
+    effect_type=EffectType.HEAL_TARGET,
     heal_amount=1,
 )
 
@@ -128,17 +176,6 @@ ABILITY_MOVEMENT_SHOT = Ability(
     damage_amount=1,
     range=3,
     status_text="выстрел при движении",
-)
-
-ABILITY_RANGED_SHOT = Ability(
-    id="ranged_shot",
-    name="Выстрел",
-    description="Атака на расстоянии 2 (не вблизи)",
-    ability_type=AbilityType.ACTIVE,
-    target_type=TargetType.ANY,
-    range=2,
-    min_range=2,  # Cannot shoot adjacent targets
-    damage_amount=0,  # Uses normal attack
 )
 
 # Бегущая по кронам specific ranged shot (1-2-2 damage)
@@ -186,7 +223,7 @@ ABILITY_ATTACK_EXP = Ability(
     name="Опыт в атаке",
     description="+1 к броску при атаке",
     ability_type=AbilityType.PASSIVE,
-    bonus_attack=1,
+    dice_bonus_attack=1,
     status_text="опыт в атаке",
 )
 
@@ -197,7 +234,9 @@ ABILITY_FRONT_ROW_BONUS = Ability(
     description="+1 к выстрелам в первом ряду",
     ability_type=AbilityType.TRIGGERED,
     trigger=AbilityTrigger.ON_TURN_START,
-    bonus_attack=1,  # +1 to ranged damage
+    effect_type=EffectType.BUFF_RANGED,
+    damage_bonus=1,  # +1 to ranged damage
+    requires_own_row=1,  # Only activates in first row
 )
 
 ABILITY_BACK_ROW_DIRECT = Ability(
@@ -206,7 +245,9 @@ ABILITY_BACK_ROW_DIRECT = Ability(
     description="Прямой урон в третьем ряду",
     ability_type=AbilityType.TRIGGERED,
     trigger=AbilityTrigger.ON_TURN_START,
+    effect_type=EffectType.GRANT_DIRECT,
     grants_direct=True,
+    requires_own_row=3,  # Only activates in third row
 )
 
 ABILITY_REGENERATION = Ability(
@@ -215,36 +256,10 @@ ABILITY_REGENERATION = Ability(
     description="Восстанавливает 3 HP в начале хода",
     ability_type=AbilityType.TRIGGERED,
     trigger=AbilityTrigger.ON_TURN_START,
+    effect_type=EffectType.HEAL_SELF,
     heal_amount=3,
     status_text="регенерация +3",
-)
-
-ABILITY_FIRST_STRIKE = Ability(
-    id="first_strike",
-    name="Первый удар",
-    description="Враг не контратакует если вы попали",
-    ability_type=AbilityType.PASSIVE,
-)
-
-ABILITY_POWERFUL_BLOW = Ability(
-    id="powerful_blow",
-    name="Мощный удар",
-    description="Атака с +2 к урону (1 раз)",
-    ability_type=AbilityType.ACTIVE,
-    target_type=TargetType.ENEMY,
-    range=1,
-    damage_amount=2,  # Bonus damage
-    cooldown=2,
-)
-
-ABILITY_INSPIRE = Ability(
-    id="inspire",
-    name="Воодушевление",
-    description="Союзник получает +1 к атаке до конца хода",
-    ability_type=AbilityType.ACTIVE,
-    target_type=TargetType.ALLY,
-    range=1,
-    bonus_attack=1,
+    requires_damaged=True,  # Only activates if damaged
 )
 
 # Tough hide - reduces damage from cheap creatures
@@ -318,13 +333,13 @@ ABILITY_CENTER_COLUMN_DEFENSE = Ability(
     status_text="центр: +1 ОвЗ",
 )
 
-# Edge column bonus - +1 attack, +1 medium/strong damage when in edge columns
+# Edge column bonus - +1 attack dice, +1 medium/strong damage when in edge columns
 ABILITY_EDGE_COLUMN_ATTACK = Ability(
     id="edge_column_attack",
     name="Атака с флангов",
     description="На флангах: +1 ОвА, +1 средний/сильный удар",
     ability_type=AbilityType.PASSIVE,
-    bonus_attack=1,
+    dice_bonus_attack=1,
     status_text="фланг: +1 ОвА",
 )
 
@@ -345,6 +360,7 @@ ABILITY_GAIN_COUNTER = Ability(
     description="Получить фишку (макс 3)",
     ability_type=AbilityType.ACTIVE,
     target_type=TargetType.SELF,
+    effect_type=EffectType.GAIN_COUNTER,
     status_text="фишка",
 )
 
@@ -377,8 +393,10 @@ ABILITY_REGENERATION_1 = Ability(
     description="Восстанавливает 1 HP в начале хода",
     ability_type=AbilityType.TRIGGERED,
     trigger=AbilityTrigger.ON_TURN_START,
+    effect_type=EffectType.HEAL_SELF,
     heal_amount=1,
     status_text="регенерация +1",
+    requires_damaged=True,  # Only activates if damaged
 )
 
 # Valhalla: give ally ОвА+1 (Ледовый охотник)
@@ -388,7 +406,7 @@ ABILITY_VALHALLA_OVA = Ability(
     description="Союзник получает ОвА+1",
     ability_type=AbilityType.TRIGGERED,
     trigger=AbilityTrigger.VALHALLA,
-    bonus_attack=1,  # +1 to dice roll
+    dice_bonus_attack=1,  # +1 to dice roll
     status_text="Вальхалла",
 )
 
@@ -456,7 +474,7 @@ ABILITY_DEFENSE_EXP = Ability(
     name="Опыт в защите",
     description="+1 к броску при защите",
     ability_type=AbilityType.PASSIVE,
-    bonus_attack=1,  # Reusing this field for defense bonus
+    dice_bonus_defense=1,
     status_text="опыт в защите",
 )
 
@@ -476,7 +494,8 @@ ABILITY_DEFENDER_BUFF = Ability(
     description="При защите: +2 к удару и ОвА+1",
     ability_type=AbilityType.TRIGGERED,
     trigger=AbilityTrigger.ON_DEFEND,
-    bonus_attack=2,  # +2 to attack
+    damage_bonus=2,  # +2 to attack damage
+    dice_bonus_attack=1,  # +1 to dice roll
     status_text="ярость защитника",
 )
 
@@ -487,6 +506,7 @@ ABILITY_SCAVENGING = Ability(
     description="При убийстве врага: полное исцеление",
     ability_type=AbilityType.TRIGGERED,
     trigger=AbilityTrigger.ON_KILL,
+    effect_type=EffectType.FULL_HEAL_SELF,
     status_text="трупоедство",
 )
 
@@ -526,7 +546,9 @@ ABILITY_WEB_THROW = Ability(
     ability_type=AbilityType.ACTIVE,
     target_type=TargetType.ENEMY,
     range=2,
+    effect_type=EffectType.APPLY_WEBBED,
     status_text="паутина",
+    target_not_flying=True,  # Cannot target flying creatures
 )
 
 # Luck (Удача) - instant ability to modify dice rolls
@@ -600,26 +622,6 @@ ABILITY_STROI_OVZ_COMMON = Ability(
     status_text="строй ОвЗ+2",
 )
 
-# Passive OVA+1: +1 attack dice
-ABILITY_OVA_1 = Ability(
-    id="ova_1",
-    name="ОвА+1",
-    description="+1 к кубику атаки",
-    ability_type=AbilityType.PASSIVE,
-    bonus_attack=1,
-    status_text="ОвА+1",
-)
-
-# Passive OVZ+1: +1 defense dice
-ABILITY_OVZ_1 = Ability(
-    id="ovz_1",
-    name="ОвЗ+1",
-    description="+1 к кубику защиты",
-    ability_type=AbilityType.PASSIVE,
-    bonus_attack=1,  # Reusing field, handled specially for defense
-    status_text="ОвЗ+1",
-)
-
 # Valhalla: give ally +1 strike (Костедробитель)
 ABILITY_VALHALLA_STRIKE = Ability(
     id="valhalla_strike",
@@ -627,7 +629,7 @@ ABILITY_VALHALLA_STRIKE = Ability(
     description="Союзник получает +1 к удару",
     ability_type=AbilityType.TRIGGERED,
     trigger=AbilityTrigger.VALHALLA,
-    bonus_attack=1,  # +1 to attack damage
+    damage_bonus=1,  # +1 to attack damage
     status_text="Вальхалла",
 )
 
@@ -638,6 +640,7 @@ ABILITY_BORG_COUNTER = Ability(
     description="Повернуть: получить фишку",
     ability_type=AbilityType.ACTIVE,
     target_type=TargetType.SELF,
+    effect_type=EffectType.GAIN_COUNTER,
     status_text="фишка",
 )
 
@@ -651,6 +654,8 @@ ABILITY_BORG_STRIKE = Ability(
     range=1,  # Adjacent only
     damage_amount=3,
     status_text="особый удар",
+    requires_counters=1,  # Needs 1 counter to use
+    spends_counters=True,  # Consumes the counter
 )
 
 # Гном-басаарг: +1 strike and direct vs tapped enemies
@@ -660,7 +665,7 @@ ABILITY_TAPPED_BONUS = Ability(
     name="Охотник на закрытых",
     description="Против закрытых: +1 удар, напрямую",
     ability_type=AbilityType.PASSIVE,
-    bonus_attack=1,  # +1 damage vs tapped (applied conditionally in game.py)
+    damage_bonus=1,  # +1 damage vs tapped (applied conditionally in game.py)
     status_text="+1 vs закрытых",
 )
 
@@ -680,8 +685,10 @@ ABILITY_AXE_COUNTER = Ability(
     description="В начале хода в строю: +1 фишка",
     ability_type=AbilityType.TRIGGERED,
     trigger=AbilityTrigger.ON_TURN_START,
+    effect_type=EffectType.GAIN_COUNTER,
     is_formation=True,  # Formation ability - needs adjacent ally with formation
     status_text="накопление",
+    requires_formation=True,  # Only triggers when in formation
 )
 
 # Мастер топора: tap to gain counter (active)
@@ -691,6 +698,7 @@ ABILITY_AXE_TAP = Ability(
     description="Отыграть: +1 фишка",
     ability_type=AbilityType.ACTIVE,
     target_type=TargetType.SELF,
+    effect_type=EffectType.GAIN_COUNTER,
     status_text="накопление",
 )
 
@@ -738,7 +746,7 @@ ABILITY_CLOSED_ATTACK_BONUS = Ability(
     name="Бьёт лежачих",
     description="+1 к удару по закрытым существам",
     ability_type=AbilityType.PASSIVE,
-    bonus_attack=1,  # Applied conditionally in game.py when target is tapped
+    damage_bonus=1,  # Applied conditionally in game.py when target is tapped
     status_text="+1 vs закрытых",
 )
 
@@ -760,7 +768,6 @@ ABILITIES = {
     "heal_ally": ABILITY_HEAL_ALLY,
     "heal_1": ABILITY_HEAL_1,
     "movement_shot": ABILITY_MOVEMENT_SHOT,
-    "ranged_shot": ABILITY_RANGED_SHOT,
     "crown_runner_shot": ABILITY_CROWN_RUNNER_SHOT,
     "lunge": ABILITY_LUNGE,
     "lunge_2": ABILITY_LUNGE_2,
@@ -768,9 +775,6 @@ ABILITIES = {
     "front_row_bonus": ABILITY_FRONT_ROW_BONUS,
     "back_row_direct": ABILITY_BACK_ROW_DIRECT,
     "regeneration": ABILITY_REGENERATION,
-    "first_strike": ABILITY_FIRST_STRIKE,
-    "powerful_blow": ABILITY_POWERFUL_BLOW,
-    "inspire": ABILITY_INSPIRE,
     "tough_hide": ABILITY_TOUGH_HIDE,
     "direct_attack": ABILITY_DIRECT_ATTACK,
     "poison_immune": ABILITY_POISON_IMMUNE,
@@ -805,8 +809,6 @@ ABILITIES = {
     "stroi_atk_1": ABILITY_STROI_ATK_1,
     "stroi_armor_elite": ABILITY_STROI_ARMOR_ELITE,
     "stroi_ovz_common": ABILITY_STROI_OVZ_COMMON,
-    "ova_1": ABILITY_OVA_1,
-    "ovz_1": ABILITY_OVZ_1,
     "valhalla_strike": ABILITY_VALHALLA_STRIKE,
     "borg_counter": ABILITY_BORG_COUNTER,
     "borg_strike": ABILITY_BORG_STRIKE,
