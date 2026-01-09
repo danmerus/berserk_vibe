@@ -8,6 +8,7 @@ from .card import Card, create_card
 from .card_database import create_starter_deck, create_starter_deck_p2
 from .constants import GamePhase
 from .abilities import get_ability, AbilityType, AbilityTrigger, TargetType, Ability
+from .interaction import Interaction, InteractionKind
 
 
 @dataclass
@@ -122,6 +123,10 @@ class Game:
         self.counter_selection_card: Optional[Card] = None
         self.counter_selection_ability: Optional[str] = None
         self.selected_counters: int = 0  # Number of counters selected to spend
+
+        # Unified interaction state (future: will replace individual awaiting_*/pending_* fields)
+        # See interaction.py for InteractionKind enum and Interaction dataclass
+        self.interaction: Optional[Interaction] = None
 
     def log(self, msg: str):
         """Add a message to the log."""

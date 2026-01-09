@@ -55,7 +55,7 @@ CARD_DATABASE = {
     "Циклоп": CardStats(
         name="Циклоп",
         cost=8,
-        element=Element.FOREST,
+        element=Element.MOUNTAINS,
         card_type=CardType.CREATURE,
         life=14,
         attack=(4, 5, 6),
@@ -283,16 +283,6 @@ CARD_DATABASE = {
         move=1,
         description="",
         ability_ids=["luck"]
-    ),
-    "Матросы Аделаиды": CardStats(
-        name="Матросы Аделаиды",
-        cost=5,
-        element=Element.FOREST,
-        card_type=CardType.CREATURE,
-        life=7,
-        attack=(2, 3, 4),
-        move=1,
-        description="Лесные моряки"
     ),
     "Мразень": CardStats(
         name="Мразень",
