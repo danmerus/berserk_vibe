@@ -1,6 +1,6 @@
 """Game state management and logic."""
 import random
-from typing import List, Optional, Tuple, TYPE_CHECKING
+from typing import List, Optional, Tuple, Dict, TYPE_CHECKING
 from dataclasses import dataclass, field
 
 from .board import Board
@@ -9,7 +9,16 @@ from .card_database import create_starter_deck, create_starter_deck_p2
 from .constants import GamePhase
 from .abilities import get_ability, AbilityType, AbilityTrigger, TargetType, Ability
 from .ability_handlers import get_handler, has_handler, get_targeter, get_trigger_handler
-from .interaction import Interaction, InteractionKind
+from .interaction import (
+    Interaction, InteractionKind,
+    interaction_select_defender, interaction_select_target,
+    interaction_counter_shot, interaction_movement_shot,
+    interaction_valhalla, interaction_confirm_heal,
+    interaction_choose_stench, interaction_choose_exchange,
+    interaction_select_counters
+)
+from .player_state import PlayerState
+from .commands import Command, CommandType, Event, evt_log_message
 
 
 @dataclass
@@ -33,6 +42,40 @@ class CombatResult:
         return self.defender_roll + self.defender_bonus
 
 
+@dataclass
+class DiceContext:
+    """Context for dice rolls during priority phase - uses IDs for serializability."""
+    type: str  # 'combat' or 'ranged'
+    attacker_id: int
+    atk_roll: int
+    atk_modifier: int = 0  # Luck can modify this
+
+    # Combat-specific fields
+    defender_id: Optional[int] = None
+    def_roll: int = 0
+    def_modifier: int = 0
+    atk_bonus: int = 0
+    def_bonus: int = 0
+    dice_matter: bool = True
+    defender_was_tapped: bool = False
+
+    # Ranged-specific fields
+    target_id: Optional[int] = None
+    ability_id: Optional[str] = None
+    ranged_type: Optional[str] = None  # 'shot' or 'throw'
+
+    # Exchange handling flag - set to True after exchange choice is made
+    exchange_resolved: bool = False
+
+
+@dataclass
+class StackItem:
+    """An instant ability on the stack - uses IDs for serializability."""
+    card_id: int
+    ability_id: str
+    option: str  # '+1', '-1', or 'reroll'
+
+
 class Game:
     """Main game state and logic."""
 
@@ -42,15 +85,15 @@ class Game:
         self.current_player = 1
         self.turn_number = 0
 
-        # Cards in each player's hand (for placement)
-        self.hand_p1: List[Card] = []
-        self.hand_p2: List[Card] = []
+        # Player states (encapsulates per-player data)
+        self.player_states: Dict[int, PlayerState] = {
+            1: PlayerState(player=1),
+            2: PlayerState(player=2),
+        }
 
-        # Selected card and available actions
-        self.selected_card: Optional[Card] = None
-        self._valid_moves_cache: List[int] = []  # Use property valid_moves
-        self.valid_attacks: List[int] = []
-        self.attack_mode: bool = False  # True when attack button is clicked
+        # Selected card reference (for backwards compatibility)
+        # TODO: migrate to using player_state.selected_card_id everywhere
+        self._selected_card: Optional[Card] = None
 
         # Combat state
         self.last_combat: Optional[CombatResult] = None
@@ -65,8 +108,8 @@ class Game:
         self.priority_phase: bool = False       # True when in priority window
         self.priority_player: int = 0           # Player who has priority (1 or 2)
         self.priority_passed: List[int] = []    # Players who have passed priority
-        self.pending_dice_roll: Optional[dict] = None  # Dice roll waiting for resolution
-        self.instant_stack: List[dict] = []     # Stack of instant abilities to resolve
+        self.pending_dice_roll: Optional[DiceContext] = None  # Dice roll waiting for resolution
+        self.instant_stack: List[StackItem] = []     # Stack of instant abilities to resolve
 
         # Card ID counter
         self._next_card_id = 1
@@ -82,13 +125,11 @@ class Game:
         # Maps card_id -> (card, [positions]) for cards that must attack tapped enemies
         self.forced_attackers: dict = {}  # {card_id: (card, [positions])}
 
-        # Counter selection state (for abilities like axe_strike)
-        self.awaiting_counter_selection: bool = False
-        self.counter_selection_card: Optional[Card] = None
-        self.counter_selection_ability: Optional[str] = None
-        self.selected_counters: int = 0  # Number of counters selected to spend
+        # Counter selection is now handled via unified Interaction (SELECT_COUNTERS kind)
+        # selected_counters is kept here for use after counter selection completes
+        self.selected_counters: int = 0
 
-        # Unified interaction state (future: will replace individual awaiting_*/pending_* fields)
+        # Unified interaction state (replaces all awaiting_*/pending_* patterns)
         # See interaction.py for InteractionKind enum and Interaction dataclass
         self.interaction: Optional[Interaction] = None
 
@@ -98,17 +139,104 @@ class Game:
         if len(self.messages) > 100:  # Keep last 100 messages
             self.messages.pop(0)
 
+    def get_card_by_id(self, card_id: int) -> Optional[Card]:
+        """Look up a card by its ID across all locations (board, flying, graveyard, hands)."""
+        if card_id is None:
+            return None
+        # Check board positions (including flying zones)
+        for pos in range(36):  # 0-29 ground, 30-35 flying
+            card = self.board.get_card(pos)
+            if card and card.id == card_id:
+                return card
+        # Check graveyards
+        for card in self.board.graveyard_p1:
+            if card.id == card_id:
+                return card
+        for card in self.board.graveyard_p2:
+            if card.id == card_id:
+                return card
+        # Check hands
+        for card in self.hand_p1:
+            if card.id == card_id:
+                return card
+        for card in self.hand_p2:
+            if card.id == card_id:
+                return card
+        return None
+
+    # =========================================================================
+    # PLAYER STATE PROPERTIES (backwards compatibility + delegation)
+    # =========================================================================
+
+    @property
+    def current_player_state(self) -> PlayerState:
+        """Get the current player's state."""
+        return self.player_states[self.current_player]
+
+    def get_player_state(self, player: int) -> PlayerState:
+        """Get a specific player's state."""
+        return self.player_states[player]
+
+    # Hand properties (delegate to PlayerState)
+    @property
+    def hand_p1(self) -> List[Card]:
+        return self.player_states[1].hand
+
+    @hand_p1.setter
+    def hand_p1(self, value: List[Card]):
+        self.player_states[1].hand = value
+
+    @property
+    def hand_p2(self) -> List[Card]:
+        return self.player_states[2].hand
+
+    @hand_p2.setter
+    def hand_p2(self, value: List[Card]):
+        self.player_states[2].hand = value
+
+    # Selected card property (keeps Card reference for backwards compatibility)
+    @property
+    def selected_card(self) -> Optional[Card]:
+        return self._selected_card
+
+    @selected_card.setter
+    def selected_card(self, value: Optional[Card]):
+        self._selected_card = value
+        # Sync to PlayerState
+        if value is not None:
+            self.current_player_state.selected_card_id = value.id
+        else:
+            self.current_player_state.selected_card_id = None
+
+    # Valid moves property (delegate to PlayerState)
     @property
     def valid_moves(self) -> List[int]:
         """Get valid moves - returns empty if selected card can't act."""
         if self.selected_card and not self.selected_card.can_act:
             return []
-        return self._valid_moves_cache
+        return self.current_player_state.valid_moves
 
     @valid_moves.setter
     def valid_moves(self, value: List[int]):
-        """Set valid moves cache."""
-        self._valid_moves_cache = value
+        self.current_player_state.valid_moves = value
+
+    # Valid attacks property (delegate to PlayerState)
+    @property
+    def valid_attacks(self) -> List[int]:
+        return self.current_player_state.valid_attacks
+
+    @valid_attacks.setter
+    def valid_attacks(self, value: List[int]):
+        self.current_player_state.valid_attacks = value
+
+    # Attack mode property (delegate to PlayerState)
+    @property
+    def attack_mode(self) -> bool:
+        return self.current_player_state.attack_mode
+
+    @attack_mode.setter
+    def attack_mode(self, value: bool):
+        self.current_player_state.attack_mode = value
 
     def emit_damage(self, pos: int, amount: int):
         """Emit a damage visual event."""
@@ -338,12 +466,18 @@ class Game:
             return self.forced_attackers[card.id][1]  # Return positions list
         return None
 
-    def setup_game(self):
-        """Initialize a new game with starter decks."""
-        deck_p1 = create_starter_deck()
-        deck_p2 = create_starter_deck_p2()
+    def setup_game(self, p1_squad: list = None, p2_squad: list = None):
+        """Initialize a new game.
 
-        # Create cards for both players (different decks)
+        Args:
+            p1_squad: List of card names for player 1's squad. If None, uses starter deck.
+            p2_squad: List of card names for player 2's squad. If None, uses starter deck.
+        """
+        # Use provided squads or fall back to starter decks
+        deck_p1 = p1_squad if p1_squad else create_starter_deck()
+        deck_p2 = p2_squad if p2_squad else create_starter_deck_p2()
+
+        # Create cards for both players
         for name in deck_p1:
             card = create_card(name, player=1, card_id=self._next_card_id)
             self._next_card_id += 1
@@ -361,6 +495,50 @@ class Game:
         self.phase = GamePhase.SETUP
         self.current_player = 1
         self.log("Игра началась! Расставьте существ.")
+
+    def setup_game_with_placement(self, p1_cards: List[Card], p2_cards: List[Card]):
+        """Initialize game with pre-placed cards from placement phase.
+
+        Args:
+            p1_cards: List of Card objects for player 1, with positions already set.
+            p2_cards: List of Card objects for player 2, with positions already set.
+        """
+        # Separate flying and ground cards
+        p1_ground = [c for c in p1_cards if not c.stats.is_flying]
+        p1_flying = [c for c in p1_cards if c.stats.is_flying]
+        p2_ground = [c for c in p2_cards if not c.stats.is_flying]
+        p2_flying = [c for c in p2_cards if c.stats.is_flying]
+
+        # Place ground cards at their assigned positions
+        for card in p1_ground:
+            self.board.place_card(card, card.position)
+
+        for card in p2_ground:
+            self.board.place_card(card, card.position)
+
+        # Place flying cards in flying zones
+        for i, card in enumerate(p1_flying[:self.board.FLYING_SLOTS]):
+            flying_pos = self.board.FLYING_P1_START + i
+            card.position = flying_pos
+            self.board.place_card(card, flying_pos)
+
+        for i, card in enumerate(p2_flying[:self.board.FLYING_SLOTS]):
+            flying_pos = self.board.FLYING_P2_START + i
+            card.position = flying_pos
+            self.board.place_card(card, flying_pos)
+
+        # Set up game state
+        self.phase = GamePhase.MAIN
+        self.turn_number = 1
+        self.current_player = 1
+
+        # Calculate initial formations
+        self.recalculate_formations()
+
+        self.log("Карты расставлены!")
+
+        # Start the first turn (triggers ON_TURN_START abilities)
+        self.start_turn()
 
     def auto_place_for_testing(self):
         """Auto-place some cards for quick testing, prioritizing cards with abilities."""
@@ -545,17 +723,26 @@ class Game:
         if card.player == self.current_player:
             # Check for forced attack requirement
             if self.has_forced_attack:
-                # Only allow selecting cards that must attack
                 forced_targets = self.get_forced_attacker_card(card)
-                if forced_targets is None:
+                if forced_targets is not None:
+                    # This card must attack - auto-enter attack mode
+                    self.selected_card = card
+                    self.valid_moves = []
+                    self.valid_attacks = forced_targets
+                    self.attack_mode = True
+                    return True
+                else:
+                    # Allow selecting cards with instant abilities (e.g., luck)
+                    # They can be selected but cannot move/attack
+                    if card.has_ability("luck"):
+                        self.selected_card = card
+                        self.valid_moves = []
+                        self.valid_attacks = []
+                        self.attack_mode = False
+                        return True
+                    # Other cards cannot be selected during forced attack
                     self.log("Сначала атакуйте закрытого врага!")
                     return False
-                # Auto-enter attack mode with only forced targets
-                self.selected_card = card
-                self.valid_moves = []  # No movement allowed
-                self.valid_attacks = forced_targets
-                self.attack_mode = True
-                return True
 
             self.selected_card = card
             self.valid_moves = self.board.get_valid_moves(card) if card.can_act else []
@@ -657,14 +844,14 @@ class Game:
             self._process_next_valhalla()  # Process next one
             return
 
-        # Enter Valhalla target selection using unified Interaction
-        self.interaction = Interaction(
-            kind=InteractionKind.SELECT_VALHALLA_TARGET,
-            actor=dead_card,
-            valid_cards=allies,
-            valid_positions=[c.position for c in allies],
-            context={'ability': ability},
+        # Enter Valhalla target selection using unified Interaction (data-only)
+        self.interaction = interaction_valhalla(
+            source_id=dead_card.id,
+            valid_positions=tuple(c.position for c in allies),
+            valid_card_ids=tuple(c.id for c in allies),
         )
+        # Store ability_id in context for network serialization
+        self.interaction.context['ability_id'] = ability.id
         self.log(f"Вальхалла {dead_card.name}: выберите существо")
 
     def select_valhalla_target(self, pos: int) -> bool:
@@ -675,11 +862,12 @@ class Game:
         if not self.interaction.can_select_position(pos):
             return False
 
-        dead_card = self.interaction.actor
-        ability = self.interaction.context.get('ability')
+        dead_card = self.get_card_by_id(self.interaction.actor_id)
+        ability_id = self.interaction.context.get('ability_id')
+        ability = get_ability(ability_id) if ability_id else None
         target = self.board.get_card(pos)
 
-        if not target or not ability:
+        if not target or not ability or not dead_card:
             return False
 
         # Apply Valhalla effect
@@ -840,19 +1028,21 @@ class Game:
                 if not targets:
                     self.log("Нет доступных целей!")
                     return False
-                # Enter ability targeting using unified Interaction
-                self.interaction = Interaction(
-                    kind=InteractionKind.SELECT_ABILITY_TARGET,
-                    actor=card,
-                    valid_positions=targets,
-                    context={'ability': ability},
+                # Enter ability targeting using unified Interaction (data-only)
+                self.interaction = interaction_select_target(
+                    actor_id=card.id,
+                    ability_id=ability.id,
+                    valid_positions=tuple(targets),
                 )
                 self.log(f"Выберите цель для {ability.name} (0 фишек)")
                 return True
-            # Start counter selection mode
-            self.awaiting_counter_selection = True
-            self.counter_selection_card = card
-            self.counter_selection_ability = ability_id
+            # Start counter selection mode using unified Interaction
+            self.interaction = interaction_select_counters(
+                card_id=card.id,
+                min_counters=0,
+                max_counters=card.counters,
+            )
+            self.interaction.context['ability_id'] = ability_id
             self.selected_counters = 0  # Default to 0 counters
             self.log(f"Выберите количество фишек (0-{card.counters})")
             return True
@@ -872,12 +1062,11 @@ class Game:
                 self.log("Нет доступных целей!")
                 return False
 
-            # Enter ability targeting using unified Interaction
-            self.interaction = Interaction(
-                kind=InteractionKind.SELECT_ABILITY_TARGET,
-                actor=card,
-                valid_positions=targets,
-                context={'ability': ability},
+            # Enter ability targeting using unified Interaction (data-only)
+            self.interaction = interaction_select_target(
+                actor_id=card.id,
+                ability_id=ability.id,
+                valid_positions=tuple(targets),
             )
             self.log(f"Выберите цель для {ability.name}")
             return True
@@ -974,9 +1163,10 @@ class Game:
         if not target:
             return False
 
-        card = self.interaction.actor
-        ability = self.interaction.context.get('ability')
-        if not ability:
+        card = self.get_card_by_id(self.interaction.actor_id)
+        ability_id = self.interaction.context.get('ability_id')
+        ability = get_ability(ability_id) if ability_id else None
+        if not card or not ability:
             return False
 
         result = self._execute_ability(card, ability, target)
@@ -1251,11 +1441,10 @@ class Game:
         if not valid_targets:
             return
 
-        # Enter counter shot targeting mode using unified Interaction
-        self.interaction = Interaction(
-            kind=InteractionKind.SELECT_COUNTER_SHOT,
-            actor=attacker,
-            valid_positions=valid_targets,
+        # Enter counter shot targeting mode using unified Interaction (data-only)
+        self.interaction = interaction_counter_shot(
+            shooter_id=attacker.id,
+            valid_positions=tuple(valid_targets),
         )
         self.log(f"{attacker.name}: выберите цель для выстрела")
 
@@ -1267,7 +1456,7 @@ class Game:
         if not self.interaction.can_select_position(pos):
             return False
 
-        attacker = self.interaction.actor
+        attacker = self.get_card_by_id(self.interaction.actor_id)
         target = self.board.get_card(pos)
 
         if not target:
@@ -1322,28 +1511,30 @@ class Game:
         # Get valid targets (range 3, not adjacent/diagonal, includes flyers)
         valid_targets = []
 
-        # Ground targets within Manhattan range 3, but Chebyshev >= 2 (not adjacent)
+        # Ground enemy targets within Manhattan range 3, but Chebyshev >= 2 (not adjacent)
         for target_card in self.board.get_all_cards(include_flying=False):
             if not target_card.is_alive or target_card.position is None or target_card == card:
+                continue
+            # Only target enemies
+            if target_card.player == card.player:
                 continue
             manhattan = self._get_distance(card.position, target_card.position)
             chebyshev = self._get_chebyshev_distance(card.position, target_card.position)
             if manhattan <= 3 and chebyshev >= 2:
                 valid_targets.append(target_card.position)
 
-        # Flying targets (ranged attacks can always target flyers)
+        # Flying enemy targets (ranged attacks can always target flyers)
         for target_card in self.board.get_flying_cards():
-            if target_card.is_alive and target_card.position not in valid_targets:
+            if target_card.is_alive and target_card.player != card.player and target_card.position not in valid_targets:
                 valid_targets.append(target_card.position)
 
         if not valid_targets:
             return
 
-        # Enter movement shot targeting mode using unified Interaction (optional shot)
-        self.interaction = Interaction(
-            kind=InteractionKind.SELECT_MOVEMENT_SHOT,
-            actor=card,
-            valid_positions=valid_targets,
+        # Enter movement shot targeting mode using unified Interaction (data-only, optional shot)
+        self.interaction = interaction_movement_shot(
+            shooter_id=card.id,
+            valid_positions=tuple(valid_targets),
         )
         self.log(f"{card.name}: можно выстрелить (необязательно)")
 
@@ -1355,10 +1546,10 @@ class Game:
         if not self.interaction.can_select_position(pos):
             return False
 
-        shooter = self.interaction.actor
+        shooter = self.get_card_by_id(self.interaction.actor_id)
         target = self.board.get_card(pos)
 
-        if not target:
+        if not target or not shooter:
             return False
 
         self.emit_arrow(shooter.position, target.position, 'shot')
@@ -1380,8 +1571,9 @@ class Game:
     def skip_movement_shot(self):
         """Skip the movement shot opportunity."""
         if self.awaiting_movement_shot:
-            shooter = self.interaction.actor
-            self.log(f"{shooter.name}: выстрел пропущен")
+            shooter = self.get_card_by_id(self.interaction.actor_id)
+            if shooter:
+                self.log(f"{shooter.name}: выстрел пропущен")
             self.interaction = None
 
     def _process_heal_on_attack(self, attacker: Card, target: Card):
@@ -1411,12 +1603,11 @@ class Game:
         # Only offer heal if attacker is damaged
         if attacker.curr_life >= attacker.life:
             return
-        # Enter heal confirmation mode using unified Interaction
-        self.interaction = Interaction(
-            kind=InteractionKind.CONFIRM_HEAL,
-            actor=attacker,
-            amount=heal_amount,
-            context={'front_card': front_card.name},
+        # Enter heal confirmation mode using unified Interaction (data-only)
+        self.interaction = interaction_confirm_heal(
+            healer_id=attacker.id,
+            target_id=front_card.id,
+            heal_amount=heal_amount,
         )
         self.log(f"{attacker.name}: лечиться на {heal_amount}? (напротив: {front_card.name})")
 
@@ -1424,8 +1615,10 @@ class Game:
         """Player confirms or declines optional heal."""
         if not self.awaiting_heal_confirm:
             return False
-        attacker = self.interaction.actor
-        heal_amount = self.interaction.amount
+        attacker = self.get_card_by_id(self.interaction.actor_id)
+        heal_amount = self.interaction.context.get('heal_amount', 0)
+        if not attacker:
+            return False
         if accept and attacker.is_alive:
             healed = attacker.heal(heal_amount)
             if healed > 0:
@@ -1463,13 +1656,12 @@ class Game:
         ability = get_ability("hellish_stench")
         damage = ability.damage_amount if ability else 2
 
-        # Enter stench choice mode using unified Interaction
-        self.interaction = Interaction(
-            kind=InteractionKind.CHOOSE_STENCH,
-            actor=attacker,
-            target=target,
-            amount=damage,
+        # Enter stench choice mode using unified Interaction (data-only)
+        self.interaction = interaction_choose_stench(
+            target_id=target.id,
+            damage_amount=damage,
         )
+        self.interaction.context['attacker_id'] = attacker.id
         self.log(f"{attacker.name}: Адское зловоние! {target.name} закрывается или получает {damage} урона")
 
     def resolve_stench_choice(self, tap: bool) -> bool:
@@ -1477,9 +1669,13 @@ class Game:
         if not self.awaiting_stench_choice:
             return False
 
-        attacker = self.interaction.actor
-        target = self.interaction.target
-        damage = self.interaction.amount
+        attacker = self.get_card_by_id(self.interaction.context.get('attacker_id'))
+        target = self.get_card_by_id(self.interaction.target_id)
+        damage = self.interaction.context.get('damage_amount', 2)
+
+        if not target:
+            self.interaction = None
+            return False
 
         if tap:
             # Target chooses to tap
@@ -1587,15 +1783,14 @@ class Game:
         atk_roll = self.roll_dice()
 
         # Create dice context for priority phase (luck can modify)
-        dice_context = {
-            'type': 'ranged',
-            'attacker': attacker,
-            'target': target,
-            'ability': ability,
-            'ranged_type': ranged_type,
-            'atk_roll': atk_roll,
-            'atk_modifier': 0,  # Luck can modify this
-        }
+        dice_context = DiceContext(
+            type='ranged',
+            attacker_id=attacker.id,
+            atk_roll=atk_roll,
+            target_id=target.id,
+            ability_id=ability.id,
+            ranged_type=ranged_type,
+        )
 
         # Check if we should enter priority phase
         if self._enter_priority_phase(dice_context):
@@ -1605,15 +1800,17 @@ class Game:
         # No priority phase needed - continue immediately
         return self._finish_ranged_attack(dice_context)
 
-    def _finish_ranged_attack(self, dice_context: dict) -> bool:
+    def _finish_ranged_attack(self, dice_context: DiceContext) -> bool:
         """Finish ranged attack after priority phase (or immediately if no priority)."""
-        attacker = dice_context['attacker']
-        target = dice_context['target']
-        ability = dice_context.get('ability')
-        ranged_type = dice_context['ranged_type']
+        attacker = self.board.get_card_by_id(dice_context.attacker_id)
+        target = self.board.get_card_by_id(dice_context.target_id)
+        if not attacker or not target:
+            return False
+        ability = get_ability(dice_context.ability_id) if dice_context.ability_id else None
+        ranged_type = dice_context.ranged_type
 
         # Apply modifiers from luck
-        atk_roll = dice_context['atk_roll'] + dice_context.get('atk_modifier', 0)
+        atk_roll = dice_context.atk_roll + dice_context.atk_modifier
         # Clamp roll to 1-6 range after modifiers
         atk_roll = max(1, min(6, atk_roll))
 
@@ -1677,36 +1874,40 @@ class Game:
 
     def cancel_ability(self):
         """Cancel pending ability targeting."""
-        if self.awaiting_ability_target:
+        if self.awaiting_ability_target or self.awaiting_counter_selection:
             self.interaction = None
-        # Also cancel counter selection if active
-        self.awaiting_counter_selection = False
-        self.counter_selection_card = None
-        self.counter_selection_ability = None
         self.selected_counters = 0
+
+    @property
+    def awaiting_counter_selection(self) -> bool:
+        """Check if waiting for counter selection."""
+        return self.interaction is not None and self.interaction.kind == InteractionKind.SELECT_COUNTERS
 
     def set_counter_selection(self, count: int):
         """Set the number of counters to spend."""
-        if not self.awaiting_counter_selection or not self.counter_selection_card:
+        if not self.awaiting_counter_selection:
             return
-        max_counters = self.counter_selection_card.counters
-        self.selected_counters = max(1, min(count, max_counters))
+        card = self.get_card_by_id(self.interaction.actor_id)
+        if not card:
+            return
+        max_counters = card.counters
+        self.selected_counters = max(0, min(count, max_counters))
 
     def confirm_counter_selection(self) -> bool:
         """Confirm counter selection and proceed to target selection."""
-        if not self.awaiting_counter_selection or not self.counter_selection_card:
+        if not self.awaiting_counter_selection:
             return False
 
-        card = self.counter_selection_card
-        ability_id = self.counter_selection_ability
-        ability = get_ability(ability_id)
+        card = self.get_card_by_id(self.interaction.actor_id)
+        ability_id = self.interaction.context.get('ability_id')
+        ability = get_ability(ability_id) if ability_id else None
 
-        if not ability:
+        if not card or not ability:
             self.cancel_ability()
             return False
 
-        # Clear counter selection state but keep selected_counters for damage calc
-        self.awaiting_counter_selection = False
+        # Clear counter selection interaction but keep selected_counters for damage calc
+        self.interaction = None
 
         # Proceed to target selection
         targets = self._get_ability_targets(card, ability)
@@ -1715,12 +1916,11 @@ class Game:
             self.cancel_ability()
             return False
 
-        # Enter ability targeting using unified Interaction
-        self.interaction = Interaction(
-            kind=InteractionKind.SELECT_ABILITY_TARGET,
-            actor=card,
-            valid_positions=targets,
-            context={'ability': ability},
+        # Enter ability targeting using unified Interaction (data-only)
+        self.interaction = interaction_select_target(
+            actor_id=card.id,
+            ability_id=ability.id,
+            valid_positions=tuple(targets),
         )
         self.log(f"Выберите цель для {ability.name} ({self.selected_counters} фишек)")
         return True
@@ -1729,30 +1929,47 @@ class Game:
     # PRIORITY SYSTEM (Instant Abilities - Внезапные действия)
     # =========================================================================
 
-    def _get_instant_cards(self, player: int) -> List[Tuple[Card, Ability]]:
+    def _get_instant_cards(self, player: int, debug: bool = False) -> List[Tuple[Card, Ability]]:
         """Get all cards with instant abilities for a player (internal, no state check)."""
         # Get card IDs already on the stack (can't use instant twice)
-        card_ids_on_stack = {instant['card'].id for instant in self.instant_stack}
+        card_ids_on_stack = {instant.card_id for instant in self.instant_stack}
 
         # Get attacker and defender IDs - they can't use instants on their own combat
         combat_card_ids = set()
         if self.pending_dice_roll:
-            attacker = self.pending_dice_roll.get('attacker')
-            defender = self.pending_dice_roll.get('defender')
-            if attacker:
-                combat_card_ids.add(attacker.id)
-            if defender:
-                combat_card_ids.add(defender.id)
+            dice = self.pending_dice_roll
+            if dice.attacker_id:
+                combat_card_ids.add(dice.attacker_id)
+            if dice.defender_id:
+                combat_card_ids.add(dice.defender_id)
+            if dice.target_id:
+                combat_card_ids.add(dice.target_id)
 
         result = []
         for card in self.board.get_all_cards(player):
-            if not card.is_alive or card.tapped or card.webbed:
+            # Check for luck ability
+            if "luck" not in card.stats.ability_ids:
                 continue
-            # Skip cards already on the stack
+            # Debug: log why card is excluded
+            if not card.is_alive:
+                if debug:
+                    self.log(f"  [{card.name}: мёртв]")
+                continue
+            if card.tapped:
+                if debug:
+                    self.log(f"  [{card.name}: закрыт]")
+                continue
+            if card.webbed:
+                if debug:
+                    self.log(f"  [{card.name}: опутан]")
+                continue
             if card.id in card_ids_on_stack:
+                if debug:
+                    self.log(f"  [{card.name}: уже на стеке]")
                 continue
-            # Skip attacker/defender - can't modify own combat
             if card.id in combat_card_ids:
+                if debug:
+                    self.log(f"  [{card.name}: участвует в бою]")
                 continue
             for ability_id in card.stats.ability_ids:
                 ability = get_ability(ability_id)
@@ -1778,6 +1995,15 @@ class Game:
 
         if not p1_instants and not p2_instants:
             # No instants available - skip priority phase
+            # Log why each luck card is excluded (with debug=True) BEFORE clearing pending_dice_roll
+            found_any = False
+            for card in self.board.get_all_cards():
+                if card.has_ability("luck"):
+                    found_any = True
+                    break
+            if found_any:
+                self._get_instant_cards(1, debug=True)
+                self._get_instant_cards(2, debug=True)
             self.pending_dice_roll = None  # Clear it since we're not entering priority
             return False
 
@@ -1843,19 +2069,23 @@ class Game:
 
         # The pending_dice_roll is kept and used by the caller to continue combat
 
-    def _apply_instant_effect(self, instant: dict):
+    def _apply_instant_effect(self, instant: StackItem):
         """Apply the effect of a resolved instant ability."""
-        card = instant['card']
-        ability = instant['ability']
-        option = instant['option']
+        card = self.board.get_card_by_id(instant.card_id)
+        if not card:
+            return
 
-        if ability.id == "luck":
+        if instant.ability_id == "luck":
             # Parse option: atk_plus1, atk_minus1, atk_reroll, def_plus1, def_minus1, def_reroll
-            target = 'atk' if option.startswith('atk_') else 'def'
-            action = option.split('_')[1]  # plus1, minus1, reroll
+            target = 'atk' if instant.option.startswith('atk_') else 'def'
+            action = instant.option.split('_')[1]  # plus1, minus1, reroll
+
+            dice = self.pending_dice_roll
+            if not dice:
+                return
 
             # For ranged attacks, there's only attacker roll (target is 'target', not 'defender')
-            is_ranged = self.pending_dice_roll.get('type') == 'ranged'
+            is_ranged = dice.type == 'ranged'
 
             # Ranged attacks only have attacker roll, ignore defender modifications
             if is_ranged and target == 'def':
@@ -1863,29 +2093,39 @@ class Game:
                 return
 
             # Check if defender roll is 0 (tapped defender - no roll to modify)
-            if target == 'def' and self.pending_dice_roll.get('def_roll', 0) == 0:
+            if target == 'def' and dice.def_roll == 0:
                 self.log(f"  -> {card.name}: Защитник закрыт - нет броска для изменения")
                 return
 
             if target == 'atk':
-                target_name = self.pending_dice_roll['attacker'].name
+                atk_card = self.board.get_card_by_id(dice.attacker_id)
+                target_name = atk_card.name if atk_card else "атакующий"
             else:
-                # For combat, there's a 'defender' key; for ranged, use 'target'
-                target_name = self.pending_dice_roll.get('defender', self.pending_dice_roll.get('target')).name
-
-            modifier_key = f'{target}_modifier'
-            roll_key = f'{target}_roll'
+                # For combat, use defender_id; for ranged, use target_id
+                def_id = dice.defender_id if dice.defender_id else dice.target_id
+                def_card = self.board.get_card_by_id(def_id) if def_id else None
+                target_name = def_card.name if def_card else "защитник"
 
             if action == 'plus1':
-                self.pending_dice_roll[modifier_key] += 1
+                if target == 'atk':
+                    dice.atk_modifier += 1
+                else:
+                    dice.def_modifier += 1
                 self.log(f"  -> {card.name}: Удача +1 к броску {target_name}")
             elif action == 'minus1':
-                self.pending_dice_roll[modifier_key] -= 1
+                if target == 'atk':
+                    dice.atk_modifier -= 1
+                else:
+                    dice.def_modifier -= 1
                 self.log(f"  -> {card.name}: Удача -1 к броску {target_name}")
             elif action == 'reroll':
                 new_roll = random.randint(1, 6)
-                old_roll = self.pending_dice_roll[roll_key]
-                self.pending_dice_roll[roll_key] = new_roll
+                if target == 'atk':
+                    old_roll = dice.atk_roll
+                    dice.atk_roll = new_roll
+                else:
+                    old_roll = dice.def_roll
+                    dice.def_roll = new_roll
                 self.log(f"  -> {card.name}: Удача переброс {target_name} [{old_roll}] -> [{new_roll}]")
 
             # Tap the card that used the instant
@@ -1910,16 +2150,16 @@ class Game:
 
         # Check if this card already has an instant on the stack (can only use once per stack)
         for instant in self.instant_stack:
-            if instant['card'].id == card.id:
+            if instant.card_id == card.id:
                 self.log(f"{card.name}: уже использовал способность")
                 return False
 
         # Add to stack
-        self.instant_stack.append({
-            'card': card,
-            'ability': ability,
-            'option': option
-        })
+        self.instant_stack.append(StackItem(
+            card_id=card.id,
+            ability_id=ability.id,
+            option=option
+        ))
 
         self.log(f"{card.name}: Удача ({option})")
 
@@ -2215,12 +2455,12 @@ class Game:
             valid_defenders = self.board.get_valid_defenders(attacker, target)
 
         if valid_defenders:
-            # Enter defender choice mode using unified Interaction
-            self.interaction = Interaction(
-                kind=InteractionKind.SELECT_DEFENDER,
-                actor=attacker,
-                target=target,
-                valid_cards=valid_defenders,
+            # Enter defender choice mode using unified Interaction (data-only)
+            self.interaction = interaction_select_defender(
+                attacker_id=attacker.id,
+                target_id=target.id,
+                valid_defender_ids=tuple(d.id for d in valid_defenders),
+                valid_positions=tuple(d.position for d in valid_defenders if d.position is not None),
             )
             self.log(f"{attacker.name} атакует {target.name}!")
             self.log(f"Игрок {target.player}: выберите защитника")
@@ -2234,10 +2474,12 @@ class Game:
         if not self.awaiting_defender:
             return False
 
-        if not self.interaction.can_select_card(defender):
+        if not self.interaction.can_select_card_id(defender.id):
             return False
 
-        attacker = self.interaction.actor
+        attacker = self.get_card_by_id(self.interaction.actor_id)
+        if not attacker:
+            return False
         self.log(f"{defender.name} перехватывает атаку!")
 
         # Trigger ON_DEFEND abilities before combat
@@ -2261,8 +2503,11 @@ class Game:
         if not self.awaiting_defender:
             return False
 
-        attacker = self.interaction.actor
-        target = self.interaction.target
+        attacker = self.get_card_by_id(self.interaction.actor_id)
+        target = self.get_card_by_id(self.interaction.target_id)
+        if not attacker or not target:
+            self.interaction = None
+            return False
         self.log("Защита не выставлена.")
 
         # Clear defender state
@@ -2300,47 +2545,50 @@ class Game:
         dice_matter = not (atk_is_constant and (defender.tapped or def_is_constant))
 
         # Create dice context for priority phase
-        dice_context = {
-            'type': 'combat',
-            'attacker': attacker,
-            'defender': defender,
-            'atk_roll': atk_roll,
-            'atk_bonus': atk_bonus,
-            'def_roll': def_roll,
-            'def_bonus': def_bonus,
-            'atk_modifier': 0,  # Instant abilities can modify attacker's roll
-            'def_modifier': 0,  # Instant abilities can modify defender's roll
-            'dice_matter': dice_matter,  # Whether dice modifications would affect outcome
-            'defender_was_tapped': defender.tapped,  # Store tapped state at roll time
-        }
+        dice_context = DiceContext(
+            type='combat',
+            attacker_id=attacker.id,
+            atk_roll=atk_roll,
+            atk_bonus=atk_bonus,
+            defender_id=defender.id,
+            def_roll=def_roll,
+            def_bonus=def_bonus,
+            dice_matter=dice_matter,
+            defender_was_tapped=defender.tapped,
+        )
 
         # Check if we should enter priority phase (only if dice matter)
-        if dice_matter and self._enter_priority_phase(dice_context):
+        if not dice_matter:
+            self.log("  [Броски не влияют на исход]")
+        elif self._enter_priority_phase(dice_context):
             # Priority phase started - combat will continue after priority resolves
             return True
 
         # No priority phase needed - continue immediately
         return self._finish_combat(dice_context)
 
-    def _finish_combat(self, dice_context: dict, force_reduced: bool = False) -> bool:
+    def _finish_combat(self, dice_context: DiceContext, force_reduced: bool = False) -> bool:
         """Finish combat after priority phase (or immediately if no priority).
 
         Args:
             dice_context: Combat context with rolls, cards, etc.
             force_reduced: If True, use reduced attack tier (exchange choice to avoid counter)
         """
-        attacker = dice_context['attacker']
-        defender = dice_context['defender']
-        atk_roll = dice_context['atk_roll'] + dice_context.get('atk_modifier', 0)
-        atk_bonus = dice_context['atk_bonus']
-        def_roll = dice_context['def_roll'] + dice_context.get('def_modifier', 0)
-        def_bonus = dice_context['def_bonus']
+        attacker = self.board.get_card_by_id(dice_context.attacker_id)
+        defender = self.board.get_card_by_id(dice_context.defender_id)
+        if not attacker or not defender:
+            self.pending_dice_roll = None
+            return False
+        atk_roll = dice_context.atk_roll + dice_context.atk_modifier
+        atk_bonus = dice_context.atk_bonus
+        def_roll = dice_context.def_roll + dice_context.def_modifier
+        def_bonus = dice_context.def_bonus
 
         # Clear pending dice roll
         self.pending_dice_roll = None
 
         # Use tapped state from when dice were rolled (not current state)
-        defender_was_tapped = dice_context.get('defender_was_tapped', defender.tapped)
+        defender_was_tapped = dice_context.defender_was_tapped
 
         # Tapped cards don't roll or counter
         if defender_was_tapped:
@@ -2358,17 +2606,19 @@ class Game:
             )
 
             # Check for exchange situation (skip if already resolved)
-            if is_exchange and not force_reduced and not self.awaiting_exchange_choice and not dice_context.get('exchange_resolved'):
-                # Enter exchange choice state using unified Interaction
-                exchange_ctx = dice_context.copy()
-                exchange_ctx['attacker_advantage'] = roll_diff > 0
-                exchange_ctx['roll_diff'] = roll_diff
-                self.interaction = Interaction(
-                    kind=InteractionKind.CHOOSE_EXCHANGE,
-                    actor=attacker,
-                    target=defender,
-                    context=exchange_ctx,
+            # exchange_resolved is now stored in dice_context to survive interaction clearing
+            if is_exchange and not force_reduced and not self.awaiting_exchange_choice and not dice_context.exchange_resolved:
+                # Enter exchange choice state using unified Interaction (data-only)
+                self.interaction = interaction_choose_exchange(
+                    attacker_id=attacker.id,
+                    defender_id=defender.id,
+                    full_damage=dmg_to_def,
+                    reduced_damage=dmg_to_def - 1 if dmg_to_def > 0 else 0,
                 )
+                # Store dice_context info for combat resolution
+                self.interaction.context['dice_context'] = dice_context
+                self.interaction.context['attacker_advantage'] = roll_diff > 0
+                self.interaction.context['roll_diff'] = roll_diff
                 tier_names = ["слабая", "средняя", "сильная"]
 
                 if roll_diff > 0:
@@ -2502,9 +2752,9 @@ class Game:
             return False
 
         dice_context = self.pending_dice_roll
-        if dice_context['type'] == 'combat':
+        if dice_context.type == 'combat':
             return self._finish_combat(dice_context)
-        elif dice_context['type'] == 'ranged':
+        elif dice_context.type == 'ranged':
             return self._finish_ranged_attack(dice_context)
         return False
 
@@ -2518,8 +2768,12 @@ class Game:
         if not self.awaiting_exchange_choice:
             return False
 
-        dice_context = self.interaction.context
-        dice_context['exchange_resolved'] = True  # Mark that exchange was handled
+        dice_context = self.interaction.context.get('dice_context')
+        if not dice_context:
+            self.interaction = None
+            return False
+        # Mark that exchange was handled in the dice context (survives interaction clearing)
+        dice_context.exchange_resolved = True
         self.interaction = None
 
         if reduce_damage:
@@ -2568,6 +2822,180 @@ class Game:
             self.turn_number += 1
 
         self.start_turn()
+
+    # =========================================================================
+    # COMMAND PROCESSING - Central entry point for all player commands
+    # =========================================================================
+
+    def process_command(self, cmd: Command) -> Tuple[bool, List[Event]]:
+        """
+        Process a player command. Returns (success, events).
+
+        This is the central entry point for all player actions, designed for:
+        - Network play (server receives commands from clients)
+        - Replays (replay commands to recreate game state)
+        - Testing (inject commands, verify results)
+
+        Commands are validated and routed to the appropriate handler methods.
+        Events are collected during processing for network broadcast/replay logging.
+        """
+        events: List[Event] = []
+
+        # Game over - no commands accepted
+        if self.phase == GamePhase.GAME_OVER:
+            return False, events
+
+        # Validate player is allowed to act
+        # During priority phase, only the priority_player can act
+        if self.priority_phase and cmd.player != self.priority_player:
+            # Exception: both players can pass priority
+            if cmd.type not in (CommandType.PASS_PRIORITY,):
+                return False, events
+
+        # During main phase, only current_player can act (except during interactions)
+        if self.phase == GamePhase.MAIN and not self.priority_phase:
+            # During interactions, check who should respond
+            if self.interaction:
+                expected_player = self.interaction.acting_player
+                if expected_player and cmd.player != expected_player:
+                    return False, events
+            elif cmd.player != self.current_player:
+                return False, events
+
+        # Validate card ownership for card-based commands
+        if cmd.card_id is not None and cmd.type in (
+            CommandType.USE_ABILITY, CommandType.USE_INSTANT,
+            CommandType.SELECT_CARD, CommandType.TOGGLE_ATTACK_MODE
+        ):
+            card = self.board.get_card_by_id(cmd.card_id)
+            if card and card.player != cmd.player:
+                # Can't use abilities on opponent's cards
+                if cmd.type in (CommandType.USE_ABILITY, CommandType.USE_INSTANT):
+                    return False, events
+
+        # Route by command type
+        if cmd.type == CommandType.SELECT_CARD:
+            # Select by card_id (for network/replay)
+            if cmd.card_id is not None:
+                card = self.board.get_card_by_id(cmd.card_id)
+                if card and card.position is not None:
+                    return self.select_card(card.position), events
+            return False, events
+
+        elif cmd.type == CommandType.SELECT_POSITION:
+            # Select by position (for UI clicks)
+            if cmd.position is not None:
+                return self.select_card(cmd.position), events
+            return False, events
+
+        elif cmd.type == CommandType.DESELECT:
+            self.deselect_card()
+            return True, events
+
+        elif cmd.type == CommandType.MOVE:
+            if cmd.position is not None and self.selected_card:
+                if cmd.position in self.valid_moves:
+                    return self.move_card(cmd.position), events
+            return False, events
+
+        elif cmd.type == CommandType.ATTACK:
+            if cmd.position is not None and self.selected_card:
+                if cmd.position in self.valid_attacks:
+                    return self.attack(cmd.position), events
+            return False, events
+
+        elif cmd.type == CommandType.TOGGLE_ATTACK_MODE:
+            return self.toggle_attack_mode(), events
+
+        elif cmd.type == CommandType.USE_ABILITY:
+            if cmd.card_id is not None and cmd.ability_id:
+                card = self.board.get_card_by_id(cmd.card_id)
+                if card:
+                    if cmd.target_id is not None:
+                        target = self.board.get_card_by_id(cmd.target_id)
+                        if target and target.position is not None:
+                            return self.select_ability_target(target.position), events
+                    return self.use_ability(card, cmd.ability_id), events
+            return False, events
+
+        elif cmd.type == CommandType.USE_INSTANT:
+            if cmd.card_id is not None and cmd.ability_id and cmd.option:
+                card = self.board.get_card_by_id(cmd.card_id)
+                if card:
+                    return self.use_instant_ability(card, cmd.ability_id, cmd.option), events
+            return False, events
+
+        elif cmd.type == CommandType.CONFIRM:
+            if cmd.confirmed is not None:
+                if self.awaiting_heal_confirm:
+                    self.confirm_heal_on_attack(cmd.confirmed)
+                    return True, events
+            return False, events
+
+        elif cmd.type == CommandType.CANCEL:
+            if self.awaiting_ability_target or self.awaiting_counter_selection:
+                self.cancel_ability()
+                return True, events
+            return False, events
+
+        elif cmd.type == CommandType.CHOOSE_POSITION:
+            if cmd.position is not None:
+                # Route to appropriate handler based on current interaction
+                if self.awaiting_defender:
+                    card = self.board.get_card(cmd.position)
+                    if card and self.interaction.can_select_card_id(card.id):
+                        return self.choose_defender(card), events
+                elif self.awaiting_counter_shot:
+                    if self.interaction.can_select_position(cmd.position):
+                        return self.select_counter_shot_target(cmd.position), events
+                elif self.awaiting_movement_shot:
+                    if self.interaction.can_select_position(cmd.position):
+                        return self.select_movement_shot_target(cmd.position), events
+                elif self.awaiting_valhalla:
+                    if self.interaction.can_select_position(cmd.position):
+                        return self.select_valhalla_target(cmd.position), events
+                elif self.awaiting_ability_target:
+                    if self.interaction.can_select_position(cmd.position):
+                        return self.select_ability_target(cmd.position), events
+            return False, events
+
+        elif cmd.type == CommandType.CHOOSE_CARD:
+            if cmd.card_id is not None:
+                card = self.board.get_card_by_id(cmd.card_id)
+                if card and self.awaiting_defender:
+                    if self.interaction.can_select_card_id(cmd.card_id):
+                        return self.choose_defender(card), events
+            return False, events
+
+        elif cmd.type == CommandType.CHOOSE_AMOUNT:
+            if cmd.amount is not None and self.awaiting_counter_selection:
+                self.set_counter_selection(cmd.amount)
+                return True, events
+            return False, events
+
+        elif cmd.type == CommandType.PASS_PRIORITY:
+            if self.awaiting_priority:
+                if self.pass_priority():
+                    self.continue_after_priority()
+                return True, events
+            return False, events
+
+        elif cmd.type == CommandType.SKIP:
+            if self.awaiting_defender:
+                self.skip_defender()
+                return True, events
+            elif self.awaiting_movement_shot:
+                self.skip_movement_shot()
+                return True, events
+            return False, events
+
+        elif cmd.type == CommandType.END_TURN:
+            if self.phase == GamePhase.MAIN and not self.awaiting_defender:
+                self.end_turn()
+                return True, events
+            return False, events
+
+        return False, events
 
     def handle_click(self, pos: int) -> bool:
         """Handle a click on board position. Returns True if action taken."""
@@ -2626,7 +3054,7 @@ class Game:
         # Handle defender choice mode
         if self.awaiting_defender:
             card = self.board.get_card(pos)
-            if card and self.interaction.can_select_card(card):
+            if card and self.interaction.can_select_card_id(card.id):
                 return self.choose_defender(card)
             # Clicking elsewhere does nothing during defender choice
             return False

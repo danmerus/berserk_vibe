@@ -2,7 +2,7 @@
 from typing import Optional, List
 
 from .constants import CardType, Element
-from .card import CardStats
+from .card import CardStats, register_card_stats
 
 
 # =============================================================================
@@ -67,7 +67,7 @@ CARD_DATABASE = {
     "Хобгоблин": CardStats(
         name="Хобгоблин",
         cost=8,
-        element=Element.MOUNTAINS,
+        element=Element.FOREST,
         card_type=CardType.CREATURE,
         life=18,
         attack=(3, 4, 5),
@@ -97,6 +97,7 @@ CARD_DATABASE = {
         attack=(2, 2, 3),
         move=1,
         is_elite=True,
+        is_unique=True,
         description="",
         ability_ids=["gain_counter", "discharge", "magic_immune"],
         max_counters=3
@@ -281,6 +282,7 @@ CARD_DATABASE = {
         life=8,
         attack=(1, 2, 3),
         move=1,
+        is_unique=True,
         description="",
         ability_ids=["luck"]
     ),
@@ -367,6 +369,10 @@ CARD_DATABASE = {
         ability_ids=["jump", "center_column_defense", "edge_column_attack"]
     ),
 }
+
+# Register all card stats in the global registry for def_id lookup
+for _card_stats in CARD_DATABASE.values():
+    register_card_stats(_card_stats)
 
 
 def create_starter_deck() -> List[str]:

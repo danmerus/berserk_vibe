@@ -45,6 +45,16 @@ COLOR_HP_BAR = (50, 180, 50)
 COLOR_HP_BAR_BG = (80, 30, 30)
 
 
+class AppState(Enum):
+    """Application states."""
+    MENU = auto()            # Main menu
+    GAME = auto()            # In-game
+    DECK_BUILDER = auto()    # Deck building screen
+    DECK_SELECT = auto()     # Deck selection for local game
+    SQUAD_SELECT = auto()    # Squad selection (spending crystals)
+    SQUAD_PLACE = auto()     # Squad placement on board
+
+
 class GamePhase(Enum):
     """Game phases."""
     SETUP = auto()           # Initial placement
@@ -195,6 +205,27 @@ class UILayout:
     POPUP_DEFAULT_Y = 60       # Default Y position for popups
     POPUP_CARD_WIDTH = 350     # Full card popup width
     POPUP_CARD_HEIGHT = 500    # Full card popup height
+
+    # -------------------------------------------------------------------------
+    # DECK BUILDER
+    # -------------------------------------------------------------------------
+    DECK_BUILDER_LIBRARY_X = 10
+    DECK_BUILDER_LIBRARY_Y = 50
+    DECK_BUILDER_LIBRARY_WIDTH = 900
+    DECK_BUILDER_LIBRARY_HEIGHT = 280
+    DECK_BUILDER_DECK_Y = 350
+    DECK_BUILDER_DECK_HEIGHT = 320
+    DECK_BUILDER_PANEL_X = 920
+    DECK_BUILDER_PANEL_WIDTH = 340
+    # Card dimensions - larger cards, square for less cropping
+    DECK_BUILDER_CARD_WIDTH = 85
+    DECK_BUILDER_CARD_HEIGHT = 85
+    DECK_BUILDER_CARD_GAP = 6
+    DECK_BUILDER_CARDS_PER_ROW = 9
+    DECK_BUILDER_INDICATOR_WIDTH = 22
+    DECK_BUILDER_INDICATOR_HEIGHT = 14
+    # Scrollbar
+    DECK_BUILDER_SCROLLBAR_WIDTH = 12
 
     # -------------------------------------------------------------------------
     # HELPER METHODS

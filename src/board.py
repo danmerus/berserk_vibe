@@ -86,6 +86,21 @@ class Board:
             return None
         return self.cells[pos]
 
+    def get_card_by_id(self, card_id: int) -> Optional[Card]:
+        """Find a card by its ID across all board locations."""
+        # Check main board
+        for card in self.cells:
+            if card is not None and card.id == card_id:
+                return card
+        # Check flying zones
+        for card in self.flying_p1:
+            if card is not None and card.id == card_id:
+                return card
+        for card in self.flying_p2:
+            if card is not None and card.id == card_id:
+                return card
+        return None
+
     def place_card(self, card: Card, pos: int) -> bool:
         """Place a card on the board. Returns True if successful."""
         if self.is_flying_pos(pos):

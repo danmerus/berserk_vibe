@@ -74,13 +74,10 @@ class Ability:
     ranged_type: str = "shot"  # "shot" (Выстрел) or "throw" (Метание)
     grants_direct: bool = False  # Ranged ignores defenders
 
-    # Dice and damage bonuses (explicit fields replacing overloaded bonus_attack)
+    # Dice and damage bonuses
     dice_bonus_attack: int = 0   # ОвА - added to attack dice roll
     dice_bonus_defense: int = 0  # ОвЗ - added to defense dice roll
     damage_bonus: int = 0        # Flat damage bonus to attacks
-
-    # DEPRECATED: Use dice_bonus_attack, dice_bonus_defense, or damage_bonus instead
-    bonus_attack: int = 0
 
     # For defensive passives
     damage_reduction: int = 0  # Reduce incoming damage by this amount

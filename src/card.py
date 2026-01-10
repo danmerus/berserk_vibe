@@ -1,13 +1,26 @@
 """Card class and CardStats dataclass."""
 from dataclasses import dataclass, field
-from typing import Optional, Tuple, List, Dict
+from typing import Optional, Tuple, List, Dict, Any, TYPE_CHECKING
 
 from .constants import CardType, Element
+
+# Registry for CardStats - populated by card_database
+_CARD_REGISTRY: Dict[str, 'CardStats'] = {}
+
+
+def register_card_stats(stats: 'CardStats'):
+    """Register a CardStats in the global registry."""
+    _CARD_REGISTRY[stats.name] = stats
+
+
+def get_card_stats(def_id: str) -> Optional['CardStats']:
+    """Look up CardStats by definition ID (card name)."""
+    return _CARD_REGISTRY.get(def_id)
 
 
 @dataclass
 class CardStats:
-    """Base card statistics."""
+    """Base card statistics (immutable definition)."""
     name: str
     cost: int  # Total crystal cost
     element: Element
@@ -27,18 +40,22 @@ class CardStats:
 
 @dataclass
 class Card:
-    """A card instance on the battlefield."""
-    stats: CardStats
-    player: int  # 1 or 2
+    """A card instance on the battlefield.
 
-    # Current state
-    curr_life: int = field(init=False)
-    curr_move: int = field(init=False)
-    tapped: bool = False
-    position: Optional[int] = None  # Board position 0-29, None if not on board
+    Uses def_id to reference CardStats from registry for efficient serialization.
+    The stats property looks up the definition dynamically.
+    """
+    def_id: str  # Card definition ID (card name, key in registry)
+    player: int  # 1 or 2
 
     # Unique ID for this game instance
     id: int = field(default=0)
+
+    # Current state
+    curr_life: int = field(default=0, init=False)
+    curr_move: int = field(default=0, init=False)
+    tapped: bool = False
+    position: Optional[int] = None  # Board position 0-29, None if not on board
 
     # Ability cooldowns: {ability_id: turns_remaining}
     ability_cooldowns: Dict[str, int] = field(default_factory=dict)
@@ -76,9 +93,18 @@ class Card:
     formation_armor_remaining: int = field(default=0)  # Formation armor remaining
     formation_armor_max: int = field(default=0)  # Max formation armor (for tracking changes)
 
+    @property
+    def stats(self) -> CardStats:
+        """Look up CardStats from registry by def_id."""
+        stats = get_card_stats(self.def_id)
+        if stats is None:
+            raise ValueError(f"Card definition not found: {self.def_id}")
+        return stats
+
     def __post_init__(self):
-        self.curr_life = self.stats.life
-        self.curr_move = self.stats.move
+        stats = self.stats
+        self.curr_life = stats.life
+        self.curr_move = stats.move
         self.ability_cooldowns = {}
         self.temp_attack_bonus = 0
         self.temp_ranged_bonus = 0
@@ -88,12 +114,12 @@ class Card:
         self.defender_buff_dice = 0
         self.defender_buff_turns = 0
         self.counters = 0
-        self.max_counters = self.stats.max_counters
-        self.armor_remaining = self.stats.armor  # Initialize armor
+        self.max_counters = stats.max_counters
+        self.armor_remaining = stats.armor
 
     @property
     def name(self) -> str:
-        return self.stats.name
+        return self.def_id  # def_id is the card name
 
     @property
     def life(self) -> int:
@@ -213,11 +239,79 @@ class Card:
     def __repr__(self):
         return f"Card({self.name}, P{self.player}, HP:{self.curr_life}/{self.life})"
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize card instance state for network/storage.
+
+        Only serializes instance state, not the card definition (looked up by def_id).
+        """
+        return {
+            'def_id': self.def_id,
+            'player': self.player,
+            'id': self.id,
+            'curr_life': self.curr_life,
+            'curr_move': self.curr_move,
+            'tapped': self.tapped,
+            'position': self.position,
+            'ability_cooldowns': self.ability_cooldowns.copy(),
+            'temp_attack_bonus': self.temp_attack_bonus,
+            'temp_ranged_bonus': self.temp_ranged_bonus,
+            'temp_dice_bonus': self.temp_dice_bonus,
+            'has_direct': self.has_direct,
+            'defender_buff_attack': self.defender_buff_attack,
+            'defender_buff_dice': self.defender_buff_dice,
+            'defender_buff_turns': self.defender_buff_turns,
+            'killed_by_enemy': self.killed_by_enemy,
+            'valhalla_triggered': self.valhalla_triggered,
+            'webbed': self.webbed,
+            'counters': self.counters,
+            'in_formation': self.in_formation,
+            'stunned': self.stunned,
+            'armor_remaining': self.armor_remaining,
+            'formation_armor_remaining': self.formation_armor_remaining,
+            'formation_armor_max': self.formation_armor_max,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'Card':
+        """Deserialize card instance from dictionary.
+
+        Card definition is looked up from registry by def_id.
+        """
+        card = cls(
+            def_id=data['def_id'],
+            player=data['player'],
+            id=data.get('id', 0),
+        )
+        # Override post_init values with saved state
+        card.curr_life = data.get('curr_life', card.curr_life)
+        card.curr_move = data.get('curr_move', card.curr_move)
+        card.tapped = data.get('tapped', False)
+        card.position = data.get('position')
+        card.ability_cooldowns = data.get('ability_cooldowns', {}).copy()
+        card.temp_attack_bonus = data.get('temp_attack_bonus', 0)
+        card.temp_ranged_bonus = data.get('temp_ranged_bonus', 0)
+        card.temp_dice_bonus = data.get('temp_dice_bonus', 0)
+        card.has_direct = data.get('has_direct', False)
+        card.defender_buff_attack = data.get('defender_buff_attack', 0)
+        card.defender_buff_dice = data.get('defender_buff_dice', 0)
+        card.defender_buff_turns = data.get('defender_buff_turns', 0)
+        card.killed_by_enemy = data.get('killed_by_enemy', False)
+        card.valhalla_triggered = data.get('valhalla_triggered', False)
+        card.webbed = data.get('webbed', False)
+        card.counters = data.get('counters', 0)
+        card.in_formation = data.get('in_formation', False)
+        card.stunned = data.get('stunned', False)
+        card.armor_remaining = data.get('armor_remaining', 0)
+        card.formation_armor_remaining = data.get('formation_armor_remaining', 0)
+        card.formation_armor_max = data.get('formation_armor_max', 0)
+        return card
+
 
 def create_card(name: str, player: int, card_id: int) -> Card:
-    """Create a card instance from the database."""
-    # Import here to avoid circular imports
-    from .card_database import CARD_DATABASE
-    if name not in CARD_DATABASE:
+    """Create a card instance from the database.
+
+    The card definition must be registered in the registry first.
+    """
+    if get_card_stats(name) is None:
         raise ValueError(f"Unknown card: {name}")
-    return Card(stats=CARD_DATABASE[name], player=player, id=card_id)
+    return Card(def_id=name, player=player, id=card_id)

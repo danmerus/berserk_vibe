@@ -132,6 +132,11 @@ class Renderer:
         # Popup state
         self.popup_card: Optional[Card] = None
 
+        # Game over popup state
+        self.game_over_popup: bool = False
+        self.game_over_winner: int = 0  # 0 = draw, 1 or 2 = winner
+        self.game_over_button_rect: Optional[pygame.Rect] = None
+
         # Floating numbers (damage/heal effects)
         # Each entry: {'x': int, 'y': int, 'text': str, 'color': tuple, 'life': float, 'max_life': float}
         self.floating_texts: List[dict] = []
@@ -175,6 +180,9 @@ class Renderer:
             'p1_flyers': 0, 'p1_grave': 0, 'p2_flyers': 0, 'p2_grave': 0
         }
         self.counter_cancel_button: Optional[pygame.Rect] = None
+
+        # Main menu button rects: (button_id, rect)
+        self.menu_buttons: List[Tuple[str, pygame.Rect]] = []
 
     def is_panel_expanded(self, panel_id: str) -> bool:
         """Check if a specific panel is expanded."""
@@ -260,7 +268,7 @@ class Renderer:
                     # Crop art area (top portion of card, excluding frame/name/text)
                     # Berserk cards: skip name at top, get art only
                     art_margin_x = int(img_w * 0.06)  # ~30px on 496w
-                    art_top = int(img_h * 0.14)       # ~98px on 700h - skip card name
+                    art_top = int(img_h * 0.135)       # ~98px on 700h - skip card name
                     art_bottom = int(img_h * 0.55)    # ~385px on 700h
                     art_width = img_w - 2 * art_margin_x
                     art_height = art_bottom - art_top
@@ -436,15 +444,15 @@ class Renderer:
         # Defender choice mode - highlight valid defenders (board only)
         if game.awaiting_defender and game.interaction:
             # Highlight original target in red
-            target = game.interaction.target
+            target = game.get_card_by_id(game.interaction.target_id)
             if target and target.position is not None and not self._is_flying_pos(target.position):
                 x, y = self.pos_to_screen(target.position)
                 self.screen.blit(self.attack_highlight, (x, y))
 
-            # Highlight valid defenders in cyan
-            for defender in game.interaction.valid_cards:
-                if defender.position is not None and not self._is_flying_pos(defender.position):
-                    x, y = self.pos_to_screen(defender.position)
+            # Highlight valid defenders in cyan (use valid_positions since positions match card positions)
+            for pos in game.interaction.valid_positions:
+                if not self._is_flying_pos(pos):
+                    x, y = self.pos_to_screen(pos)
                     self.screen.blit(self.defender_highlight, (x, y))
             return
 
@@ -1079,7 +1087,9 @@ class Renderer:
         if not game.awaiting_counter_shot or not game.interaction:
             return
 
-        attacker = game.interaction.actor
+        attacker = game.get_card_by_id(game.interaction.actor_id)
+        if not attacker:
+            return
 
         config = PopupConfig(
             popup_id='counter_shot',
@@ -1103,7 +1113,9 @@ class Renderer:
         if not game.awaiting_movement_shot or not game.interaction:
             return
 
-        shooter = game.interaction.actor
+        shooter = game.get_card_by_id(game.interaction.actor_id)
+        if not shooter:
+            return
 
         config = PopupConfig(
             popup_id='movement_shot',
@@ -1131,8 +1143,11 @@ class Renderer:
             self.heal_confirm_buttons = []
             return
 
-        attacker = game.interaction.actor
-        heal_amount = game.interaction.amount
+        attacker = game.get_card_by_id(game.interaction.actor_id)
+        heal_amount = game.interaction.context.get('heal_amount', 0)
+        if not attacker:
+            self.heal_confirm_buttons = []
+            return
 
         config = PopupConfig(
             popup_id='heal_confirm',
@@ -1170,8 +1185,11 @@ class Renderer:
             self.stench_choice_buttons = []
             return
 
-        target = game.interaction.target
-        damage = game.interaction.amount
+        target = game.get_card_by_id(game.interaction.target_id)
+        damage = game.interaction.context.get('damage_amount', 2)
+        if not target:
+            self.stench_choice_buttons = []
+            return
 
         config = PopupConfig(
             popup_id='stench_choice',
@@ -1209,8 +1227,11 @@ class Renderer:
             self.exchange_buttons = []
             return
 
-        attacker = game.interaction.actor
-        defender = game.interaction.target
+        attacker = game.get_card_by_id(game.interaction.actor_id)
+        defender = game.get_card_by_id(game.interaction.target_id)
+        if not attacker or not defender:
+            self.exchange_buttons = []
+            return
         ctx = game.interaction.context
         attacker_advantage = ctx.get('attacker_advantage', True)
         roll_diff = ctx.get('roll_diff', 0)
@@ -1250,8 +1271,8 @@ class Renderer:
 
         config = PopupConfig(
             popup_id='exchange',
-            width=scaled(300),
-            height=scaled(90),
+            width=scaled(320),
+            height=scaled(100),
             bg_color=(80, 60, 20, 230),
             border_color=(255, 180, 80),
             title=title,
@@ -1260,16 +1281,21 @@ class Renderer:
 
         x, y, content_y = self.draw_popup_base(config)
 
-        # Buttons with damage values
-        btn_width, btn_height, gap = scaled(120), scaled(32), scaled(20)
-        btn_y = content_y + scaled(8)
+        # Buttons with damage values - positioned with explicit margins
+        btn_width, btn_height = scaled(130), scaled(36)
+        margin = scaled(15)
+        btn_y = content_y + scaled(10)
 
+        # Full button on left (brown = attack with counter)
+        full_x = x + margin
         full_rect = self.draw_popup_button(
-            x + config.width // 2 - btn_width - gap // 2, btn_y,
+            full_x, btn_y,
             btn_width, btn_height, full_btn_text, (140, 80, 40), (220, 140, 80))
 
+        # Reduce button on right (green = safe attack)
+        reduce_x = x + config.width - margin - btn_width
         reduce_rect = self.draw_popup_button(
-            x + config.width // 2 + gap // 2, btn_y,
+            reduce_x, btn_y,
             btn_width, btn_height, reduce_btn_text, (40, 100, 60), (80, 180, 100))
 
         self.exchange_buttons = [('full', full_rect), ('reduce', reduce_rect)]
@@ -1279,9 +1305,11 @@ class Renderer:
         if not game.interaction:
             return
 
-        dead_card = game.interaction.actor
-        ability = game.interaction.context.get('ability')
-        if not ability:
+        from .abilities import get_ability
+        dead_card = game.get_card_by_id(game.interaction.actor_id)
+        ability_id = game.interaction.context.get('ability_id')
+        ability = get_ability(ability_id) if ability_id else None
+        if not dead_card or not ability:
             return
 
         config = PopupConfig(
@@ -1307,7 +1335,13 @@ class Renderer:
     def draw_defender_prompt(self, game: Game):
         """Draw the defender choice prompt banner (draggable)."""
         interaction = game.interaction
-        defending_player = interaction.target.player
+        if not interaction:
+            return
+        attacker = game.get_card_by_id(interaction.actor_id)
+        target = game.get_card_by_id(interaction.target_id)
+        if not attacker or not target:
+            return
+        defending_player = target.player
 
         config = PopupConfig(
             popup_id='defender',
@@ -1321,7 +1355,7 @@ class Renderer:
         x, y, content_y = self.draw_popup_base(config)
 
         # Attack info
-        info = f"{interaction.actor.name} атакует {interaction.target.name}"
+        info = f"{attacker.name} атакует {target.name}"
         content_y = self.draw_popup_text(x, config.width, content_y, info, (255, 255, 255))
 
         # Instructions
@@ -1781,15 +1815,17 @@ class Renderer:
         # Show pending dice during priority phase (with real-time modifications)
         if game.awaiting_priority and game.pending_dice_roll:
             dice = game.pending_dice_roll
-            attacker = dice['attacker']
-            is_ranged = dice.get('type') == 'ranged'
-            defender = dice.get('defender') if not is_ranged else None
-            target = dice.get('target') if is_ranged else None
+            attacker = game.board.get_card_by_id(dice.attacker_id)
+            if not attacker:
+                return
+            is_ranged = dice.type == 'ranged'
+            defender = game.board.get_card_by_id(dice.defender_id) if dice.defender_id and not is_ranged else None
+            target = game.board.get_card_by_id(dice.target_id) if dice.target_id and is_ranged else None
 
             # Get base rolls, bonuses (ОвА/ОвЗ), and instant modifiers
-            atk_roll = dice['atk_roll']
-            atk_bonus = dice.get('atk_bonus', 0)
-            atk_mod = dice.get('atk_modifier', 0)
+            atk_roll = dice.atk_roll
+            atk_bonus = dice.atk_bonus
+            atk_mod = dice.atk_modifier
 
             # Calculate totals: base + bonus + modifier
             atk_base_total = atk_roll + atk_bonus  # Before instant modifier
@@ -1835,9 +1871,9 @@ class Renderer:
                 self.screen.blit(target_surface, (x, panel_y + 8))
             elif defender:
                 # For combat, show "vs defender[roll]"
-                def_roll = dice['def_roll']
-                def_bonus = dice.get('def_bonus', 0)
-                def_mod = dice.get('def_modifier', 0)
+                def_roll = dice.def_roll
+                def_bonus = dice.def_bonus
+                def_mod = dice.def_modifier
                 def_base_total = def_roll + def_bonus
                 def_final = def_base_total + def_mod
                 def_name = defender.name[:8]
@@ -2445,6 +2481,10 @@ class Renderer:
 
         self.draw_popup()
 
+        # Draw game over popup if active
+        if self.game_over_popup:
+            self.draw_game_over_popup()
+
         # Scale and blit to window
         self.window.fill((0, 0, 0))  # Black letterbox
         if self.scale != 1.0:
@@ -2475,11 +2515,13 @@ class Renderer:
             return
 
         dice = game.pending_dice_roll
-        attacker = dice['attacker']
-        # For ranged attacks, there's no defender - use 'target' key instead
-        is_ranged = dice.get('type') == 'ranged'
-        defender = dice.get('defender') if not is_ranged else None
-        target = dice.get('target') if is_ranged else None
+        attacker = game.board.get_card_by_id(dice.attacker_id)
+        if not attacker:
+            return
+        # For ranged attacks, there's no defender - use target_id instead
+        is_ranged = dice.type == 'ranged'
+        defender = game.board.get_card_by_id(dice.defender_id) if dice.defender_id and not is_ranged else None
+        target = game.board.get_card_by_id(dice.target_id) if dice.target_id and is_ranged else None
 
         # Popup dimensions
         popup_width = 420
@@ -2495,7 +2537,7 @@ class Renderer:
 
         # Title - different text for ranged attacks
         if is_ranged:
-            ranged_type = dice.get('ranged_type', 'shot')
+            ranged_type = dice.ranged_type or 'shot'
             title_text = "Удача - изменить бросок (метание)" if ranged_type == "throw" else "Удача - изменить бросок (выстрел)"
         else:
             title_text = "Удача - изменить бросок"
@@ -2509,9 +2551,9 @@ class Renderer:
 
         # Attacker dice row
         atk_color = COLOR_PLAYER1 if attacker.player == 1 else COLOR_PLAYER2
-        atk_mod = dice.get('atk_modifier', 0)  # Luck modifier
-        atk_bonus = dice.get('atk_bonus', 0)   # Ability bonus (OvA)
-        atk_roll = dice['atk_roll']
+        atk_mod = dice.atk_modifier  # Luck modifier
+        atk_bonus = dice.atk_bonus   # Ability bonus (OvA)
+        atk_roll = dice.atk_roll
         atk_total = atk_roll + atk_mod + atk_bonus
 
         # Show name and original roll
@@ -2563,11 +2605,11 @@ class Renderer:
 
         # Defender dice row (only for combat, not ranged attacks, and only if defender rolled)
         # def_roll is 0 when attacking a tapped creature (no counter-attack)
-        if not is_ranged and defender and dice.get('def_roll', 0) > 0:
+        if not is_ranged and defender and dice.def_roll > 0:
             def_color = COLOR_PLAYER1 if defender.player == 1 else COLOR_PLAYER2
-            def_mod = dice.get('def_modifier', 0)  # Luck modifier
-            def_bonus = dice.get('def_bonus', 0)   # Ability bonus (OvZ)
-            def_roll = dice['def_roll']
+            def_mod = dice.def_modifier  # Luck modifier
+            def_bonus = dice.def_bonus   # Ability bonus (OvZ)
+            def_roll = dice.def_roll
             def_total = def_roll + def_mod + def_bonus
 
             # Show name and original roll
@@ -2892,7 +2934,7 @@ class Renderer:
         if game.awaiting_heal_confirm:
             active_popups.append(('heal_confirm', 350, 90))
         if game.awaiting_exchange_choice:
-            active_popups.append(('exchange', 300, 90))
+            active_popups.append(('exchange', 320, 100))
 
         for popup_id, width, height in active_popups:
             rect = self._get_popup_rect(popup_id, width, height, (WINDOW_WIDTH - width) // 2, 60)
@@ -3116,3 +3158,190 @@ class Renderer:
 
         # Draw card image (no border for cleaner look)
         self.screen.blit(img, (img_x, img_y))
+
+    def show_game_over_popup(self, winner: int):
+        """Show game over popup with winner info."""
+        self.game_over_popup = True
+        self.game_over_winner = winner
+
+    def hide_game_over_popup(self):
+        """Hide game over popup."""
+        self.game_over_popup = False
+        self.game_over_button_rect = None
+
+    def draw_game_over_popup(self):
+        """Draw game over popup if active."""
+        if not self.game_over_popup:
+            return
+
+        # Semi-transparent overlay
+        overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 200))
+        self.screen.blit(overlay, (0, 0))
+
+        # Popup box
+        popup_w = scaled(400)
+        popup_h = scaled(200)
+        popup_x = (WINDOW_WIDTH - popup_w) // 2
+        popup_y = (WINDOW_HEIGHT - popup_h) // 2
+
+        # Background
+        pygame.draw.rect(self.screen, (40, 50, 60), (popup_x, popup_y, popup_w, popup_h))
+        pygame.draw.rect(self.screen, (80, 100, 120), (popup_x, popup_y, popup_w, popup_h), 3)
+
+        # Winner text
+        if self.game_over_winner == 0:
+            title_text = "Ничья!"
+            title_color = (200, 200, 200)
+        else:
+            title_text = f"Победа игрока {self.game_over_winner}!"
+            if self.game_over_winner == 1:
+                title_color = COLOR_PLAYER1
+            else:
+                title_color = COLOR_PLAYER2
+
+        title_surface = self.font_large.render(title_text, True, title_color)
+        title_x = popup_x + (popup_w - title_surface.get_width()) // 2
+        title_y = popup_y + scaled(40)
+        self.screen.blit(title_surface, (title_x, title_y))
+
+        # Congratulations text
+        congrats_text = "Поздравляем!"
+        congrats_surface = self.font_medium.render(congrats_text, True, COLOR_TEXT)
+        congrats_x = popup_x + (popup_w - congrats_surface.get_width()) // 2
+        congrats_y = popup_y + scaled(80)
+        self.screen.blit(congrats_surface, (congrats_x, congrats_y))
+
+        # OK button
+        btn_w = scaled(150)
+        btn_h = scaled(40)
+        btn_x = popup_x + (popup_w - btn_w) // 2
+        btn_y = popup_y + popup_h - btn_h - scaled(20)
+
+        self.game_over_button_rect = pygame.Rect(btn_x, btn_y, btn_w, btn_h)
+        pygame.draw.rect(self.screen, (60, 100, 60), self.game_over_button_rect)
+        pygame.draw.rect(self.screen, (80, 140, 80), self.game_over_button_rect, 2)
+
+        btn_text = self.font_medium.render("В меню", True, COLOR_TEXT)
+        btn_text_x = btn_x + (btn_w - btn_text.get_width()) // 2
+        btn_text_y = btn_y + (btn_h - btn_text.get_height()) // 2
+        self.screen.blit(btn_text, (btn_text_x, btn_text_y))
+
+    def is_game_over_button_clicked(self, x: int, y: int) -> bool:
+        """Check if game over button was clicked."""
+        return self.game_over_button_rect and self.game_over_button_rect.collidepoint(x, y)
+
+    def get_deck_builder_resources(self) -> tuple:
+        """Get resources needed for deck builder renderer.
+
+        Returns (screen, card_images, card_images_full, fonts_dict)
+        """
+        fonts = {
+            'large': self.font_large,
+            'medium': self.font_medium,
+            'small': self.font_small,
+            'card_name': self.font_card_name,
+            'indicator': self.font_indicator,
+        }
+        return self.screen, self.card_images, self.card_images_full, fonts
+
+    def draw_menu(self):
+        """Draw the main menu screen."""
+        self.menu_buttons = []
+
+        # Clear screen with background
+        self.screen.fill(COLOR_BG)
+
+        # Title
+        title_font = pygame.font.SysFont('arial', scaled(48))
+        title = title_font.render("БЕРСЕРК", True, (200, 180, 100))
+        title_x = (WINDOW_WIDTH - title.get_width()) // 2
+        self.screen.blit(title, (title_x, scaled(80)))
+
+        # Subtitle
+        subtitle = self.font_medium.render("Цифровая карточная игра", True, (150, 150, 160))
+        subtitle_x = (WINDOW_WIDTH - subtitle.get_width()) // 2
+        self.screen.blit(subtitle, (subtitle_x, scaled(140)))
+
+        # Menu buttons
+        buttons = [
+            ("test_game", "Тестовая игра", True),
+            ("local_game", "Локальная игра", True),
+            ("network_game", "Игра по сети", False),
+            ("bot_game", "Игра с ботом", False),
+            ("deck_builder", "Создание колоды", True),
+            ("exit", "Выход", True),
+        ]
+
+        btn_width = scaled(280)
+        btn_height = scaled(45)
+        btn_spacing = scaled(15)
+        start_y = scaled(220)
+
+        for i, (btn_id, btn_text, is_active) in enumerate(buttons):
+            btn_x = (WINDOW_WIDTH - btn_width) // 2
+            btn_y = start_y + i * (btn_height + btn_spacing)
+            btn_rect = pygame.Rect(btn_x, btn_y, btn_width, btn_height)
+
+            # Button colors based on active state
+            if is_active:
+                bg_color = (60, 50, 70)
+                border_color = (120, 100, 140)
+                text_color = COLOR_TEXT
+            else:
+                bg_color = (40, 40, 45)
+                border_color = (70, 70, 80)
+                text_color = (100, 100, 110)
+
+            # Draw button
+            pygame.draw.rect(self.screen, bg_color, btn_rect)
+            pygame.draw.rect(self.screen, border_color, btn_rect, 2)
+
+            # Draw text centered
+            text_surface = self.font_medium.render(btn_text, True, text_color)
+            text_x = btn_rect.x + (btn_width - text_surface.get_width()) // 2
+            text_y = btn_rect.y + (btn_height - text_surface.get_height()) // 2
+            self.screen.blit(text_surface, (text_x, text_y))
+
+            # Store button rect for click detection (only if active)
+            if is_active:
+                self.menu_buttons.append((btn_id, btn_rect))
+
+        # Version/credits at bottom
+        version_text = self.font_small.render("v0.1 - MVP", True, (80, 80, 90))
+        self.screen.blit(version_text, (scaled(20), WINDOW_HEIGHT - scaled(30)))
+
+        # Scale and blit to window
+        self.window.fill((0, 0, 0))
+        if self.scale != 1.0:
+            scaled_w = int(self.BASE_WIDTH * self.scale)
+            scaled_h = int(self.BASE_HEIGHT * self.scale)
+            scaled_surface = pygame.transform.smoothscale(self.screen, (scaled_w, scaled_h))
+            self.window.blit(scaled_surface, (self.offset_x, self.offset_y))
+        else:
+            self.window.blit(self.screen, (self.offset_x, self.offset_y))
+
+        pygame.display.flip()
+
+    def get_clicked_menu_button(self, mouse_x: int, mouse_y: int) -> Optional[str]:
+        """Check if a menu button was clicked. Returns button_id or None."""
+        for btn_id, rect in self.menu_buttons:
+            if rect.collidepoint(mouse_x, mouse_y):
+                return btn_id
+        return None
+
+    def finalize_frame(self):
+        """Scale and display the current frame.
+
+        Call this after deck builder or other screens draw to self.screen.
+        """
+        self.window.fill((0, 0, 0))
+        if self.scale != 1.0:
+            scaled_w = int(self.BASE_WIDTH * self.scale)
+            scaled_h = int(self.BASE_HEIGHT * self.scale)
+            scaled_surface = pygame.transform.smoothscale(self.screen, (scaled_w, scaled_h))
+            self.window.blit(scaled_surface, (self.offset_x, self.offset_y))
+        else:
+            self.window.blit(self.screen, (self.offset_x, self.offset_y))
+
+        pygame.display.flip()
