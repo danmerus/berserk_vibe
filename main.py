@@ -9,8 +9,8 @@ from src.constants import WINDOW_WIDTH, WINDOW_HEIGHT, FPS, GamePhase, AppState
 from src.game import Game
 from src.renderer import Renderer
 from src.commands import (
-    cmd_select_card, cmd_select_position, cmd_deselect, cmd_move, cmd_attack,
-    cmd_toggle_attack_mode, cmd_use_ability, cmd_use_instant,
+    cmd_select_card, cmd_select_position, cmd_click_board, cmd_deselect,
+    cmd_move, cmd_attack, cmd_toggle_attack_mode, cmd_use_ability, cmd_use_instant,
     cmd_confirm, cmd_cancel, cmd_choose_position, cmd_choose_card,
     cmd_choose_amount, cmd_pass_priority, cmd_skip, cmd_end_turn
 )
@@ -37,6 +37,203 @@ def create_local_game_state():
         'placed_cards_p1': None,
         'placed_cards_p2': None,
     }
+
+
+# =============================================================================
+# CLICK HANDLING HELPERS - Factor out the big if/elif ladder
+# =============================================================================
+
+def handle_priority_click(game, renderer, mx: int, my: int) -> bool:
+    """Handle clicks during priority phase. Returns True if handled."""
+    # During priority, use priority_player (who has priority to act)
+    priority_player = game.priority_player
+
+    if renderer.dice_popup_open:
+        opt = renderer.get_clicked_dice_option(mx, my)
+        if opt == 'cancel':
+            renderer.close_dice_popup()
+            return True
+        elif opt:
+            card = renderer.dice_popup_card
+            if card:
+                game.process_command(cmd_use_instant(priority_player, card.id, "luck", opt))
+                renderer.close_dice_popup()
+                return True
+
+    if renderer.get_pass_button_rect().collidepoint(mx, my):
+        renderer.close_dice_popup()
+        game.process_command(cmd_pass_priority(priority_player))
+        return True
+
+    # Allow clicking on cards and abilities during priority
+    ability_id = renderer.get_clicked_ability(mx, my)
+    if ability_id and game.selected_card:
+        if ability_id == "luck":
+            # Check if card is a combat participant (can't use luck on own combat)
+            card = game.selected_card
+            is_combat_participant = False
+            if game.pending_dice_roll:
+                dice = game.pending_dice_roll
+                combat_ids = {dice.attacker_id, dice.defender_id}
+                is_combat_participant = card.id in combat_ids
+            if not is_combat_participant:
+                renderer.open_dice_popup(game.selected_card)
+                return True
+
+    # Try to select a card (use priority_player, not current_player)
+    pos = renderer.screen_to_pos(mx, my)
+    if pos is not None:
+        game.process_command(cmd_select_position(priority_player, pos))
+        return True
+
+    return False
+
+
+def handle_interaction_click(game, renderer, mx: int, my: int) -> bool:
+    """Handle clicks during popup/interaction states. Returns True if handled."""
+    # For interactions, use the interaction's acting_player (who should respond)
+    # This may differ from current_player (e.g., stench target chooses, not attacker)
+    acting_player = game.interaction.acting_player if game.interaction else game.current_player
+
+    if game.awaiting_counter_selection:
+        opt = renderer.get_clicked_counter_button(mx, my)
+        if opt == 'confirm':
+            game.process_command(cmd_confirm(acting_player, True))
+            return True
+        elif opt == 'cancel':
+            game.process_command(cmd_cancel(acting_player))
+            return True
+        elif isinstance(opt, int):
+            game.process_command(cmd_choose_amount(acting_player, opt))
+            return True
+
+    if game.awaiting_heal_confirm:
+        choice = renderer.get_clicked_heal_button(mx, my)
+        if choice == 'yes':
+            game.process_command(cmd_confirm(acting_player, True))
+            return True
+        elif choice == 'no':
+            game.process_command(cmd_confirm(acting_player, False))
+            return True
+
+    if game.awaiting_exchange_choice:
+        choice = renderer.get_clicked_exchange_button(mx, my)
+        if choice == 'full':
+            game.process_command(cmd_confirm(acting_player, True))
+            return True
+        elif choice == 'reduce':
+            game.process_command(cmd_confirm(acting_player, False))
+            return True
+
+    if game.awaiting_stench_choice:
+        choice = renderer.get_clicked_stench_button(mx, my)
+        if choice == 'tap':
+            game.process_command(cmd_confirm(acting_player, True))
+            return True
+        elif choice == 'damage':
+            game.process_command(cmd_confirm(acting_player, False))
+            return True
+
+    return False
+
+
+def handle_ui_click(game, renderer, mx: int, my: int) -> bool:
+    """Handle clicks on UI elements (buttons, panels). Returns True if handled."""
+    if renderer.get_skip_button_rect().collidepoint(mx, my):
+        # Skip uses acting_player during interactions (e.g., skip defender selection)
+        if game.interaction and game.interaction.acting_player:
+            player = game.interaction.acting_player
+        else:
+            player = game.current_player
+        game.process_command(cmd_skip(player))
+        return True
+
+    if renderer.handle_side_panel_click(mx, my):
+        return True
+
+    if renderer.get_end_turn_button_rect().collidepoint(mx, my):
+        game.process_command(cmd_end_turn(game.current_player))
+        return True
+
+    if renderer.get_clicked_attack_button(mx, my):
+        if game.selected_card:
+            game.process_command(cmd_toggle_attack_mode(game.current_player, game.selected_card.id))
+            return True
+
+    return False
+
+
+def handle_ability_click(game, renderer, mx: int, my: int) -> bool:
+    """Handle clicks on ability buttons. Returns True if handled."""
+    ability_id = renderer.get_clicked_ability(mx, my)
+    if ability_id and game.selected_card:
+        if game.awaiting_priority and ability_id == "luck":
+            renderer.open_dice_popup(game.selected_card)
+        else:
+            game.process_command(cmd_use_ability(
+                game.current_player,
+                game.selected_card.id,
+                ability_id
+            ))
+        return True
+    return False
+
+
+def handle_board_click(game, renderer, mx: int, my: int) -> bool:
+    """Handle clicks on the game board. Returns True if handled."""
+    pos = renderer.screen_to_pos(mx, my)
+    if pos is not None:
+        # During interactions (defender choice, valhalla, etc.), use acting_player
+        if game.interaction and game.interaction.acting_player:
+            player = game.interaction.acting_player
+        else:
+            player = game.current_player
+
+        # If a card is selected and clicking on a valid move/attack position,
+        # send explicit command with card_id (network-ready)
+        if game.selected_card and game.selected_card.player == player:
+            if pos in game.valid_moves:
+                game.process_command(cmd_move(player, game.selected_card.id, pos))
+                return True
+            if pos in game.valid_attacks:
+                game.process_command(cmd_attack(player, game.selected_card.id, pos))
+                return True
+
+        # Otherwise use generic board click for selection/deselection
+        game.process_command(cmd_click_board(player, pos))
+        return True
+    return False
+
+
+def handle_game_left_click(game, renderer, mx: int, my: int) -> bool:
+    """
+    Handle left click during game. Returns True if handled.
+    Routes to appropriate handler based on game state.
+    """
+    # Handle popup drag attempts first
+    if renderer.start_popup_drag(mx, my, game):
+        return True
+    if renderer.start_log_scrollbar_drag(mx, my):
+        return True
+
+    # Priority phase has special handling
+    if game.awaiting_priority:
+        return handle_priority_click(game, renderer, mx, my)
+
+    # Check for interaction popups (counter, heal, exchange, stench)
+    if handle_interaction_click(game, renderer, mx, my):
+        return True
+
+    # Check UI elements (buttons, panels)
+    if handle_ui_click(game, renderer, mx, my):
+        return True
+
+    # Check ability clicks
+    if handle_ability_click(game, renderer, mx, my):
+        return True
+
+    # Finally, handle board clicks
+    return handle_board_click(game, renderer, mx, my)
 
 
 def main():
@@ -90,9 +287,12 @@ def main():
                         game.setup_game()
                         game.auto_place_for_testing()
                     elif event.key == pygame.K_y and game.awaiting_heal_confirm:
-                        game.process_command(cmd_confirm(game.current_player, True))
+                        # Use interaction's acting_player for heal confirm
+                        player = game.interaction.acting_player if game.interaction else game.current_player
+                        game.process_command(cmd_confirm(player, True))
                     elif event.key == pygame.K_n and game.awaiting_heal_confirm:
-                        game.process_command(cmd_confirm(game.current_player, False))
+                        player = game.interaction.acting_player if game.interaction else game.current_player
+                        game.process_command(cmd_confirm(player, False))
 
                 elif app_state in (AppState.DECK_BUILDER, AppState.DECK_SELECT) and deck_builder_renderer:
                     if deck_builder_renderer.text_input_active:
@@ -353,7 +553,7 @@ def main():
                                         ox, oy = pr.get_card_center_offset()
                                         ps.start_drag(card, ox, oy)
 
-                    # Game state
+                    # Game state - use refactored click handler
                     elif app_state == AppState.GAME and game:
                         if renderer.game_over_popup:
                             if renderer.is_game_over_button_clicked(mx, my):
@@ -363,84 +563,8 @@ def main():
                                 local_game_state = create_local_game_state()
                         elif renderer.popup_card:
                             renderer.hide_popup()
-                        elif renderer.start_popup_drag(mx, my, game):
-                            pass
-                        elif renderer.start_log_scrollbar_drag(mx, my):
-                            pass
-                        elif game.awaiting_priority:
-                            if renderer.dice_popup_open:
-                                opt = renderer.get_clicked_dice_option(mx, my)
-                                if opt == 'cancel':
-                                    renderer.close_dice_popup()
-                                elif opt:
-                                    card = renderer.dice_popup_card
-                                    if card:
-                                        game.process_command(cmd_use_instant(game.priority_player, card.id, "luck", opt))
-                                        renderer.close_dice_popup()
-                            elif renderer.get_pass_button_rect().collidepoint(mx, my):
-                                renderer.close_dice_popup()
-                                game.process_command(cmd_pass_priority(game.priority_player))
-                            else:
-                                # Allow clicking on cards and abilities during priority
-                                ability_id = renderer.get_clicked_ability(mx, my)
-                                if ability_id and game.selected_card:
-                                    if ability_id == "luck":
-                                        renderer.open_dice_popup(game.selected_card)
-                                else:
-                                    # Try to select a card
-                                    pos = renderer.screen_to_pos(mx, my)
-                                    if pos is not None:
-                                        game.select_card(pos)
-                        elif game.awaiting_counter_selection:
-                            opt = renderer.get_clicked_counter_button(mx, my)
-                            if opt == 'confirm':
-                                game.confirm_counter_selection()
-                            elif opt == 'cancel':
-                                game.process_command(cmd_cancel(game.current_player))
-                            elif isinstance(opt, int):
-                                game.process_command(cmd_choose_amount(game.current_player, opt))
-                        elif game.awaiting_heal_confirm:
-                            choice = renderer.get_clicked_heal_button(mx, my)
-                            if choice == 'yes':
-                                game.process_command(cmd_confirm(game.current_player, True))
-                            elif choice == 'no':
-                                game.process_command(cmd_confirm(game.current_player, False))
-                        elif game.awaiting_exchange_choice:
-                            choice = renderer.get_clicked_exchange_button(mx, my)
-                            if choice == 'full':
-                                game.resolve_exchange_choice(reduce_damage=False)
-                            elif choice == 'reduce':
-                                game.resolve_exchange_choice(reduce_damage=True)
-                        elif game.awaiting_stench_choice:
-                            choice = renderer.get_clicked_stench_button(mx, my)
-                            if choice == 'tap':
-                                game.resolve_stench_choice(tap=True)
-                            elif choice == 'damage':
-                                game.resolve_stench_choice(tap=False)
-                        elif renderer.get_skip_button_rect().collidepoint(mx, my):
-                            game.process_command(cmd_skip(game.current_player))
-                        elif renderer.handle_side_panel_click(mx, my):
-                            pass
-                        elif renderer.get_end_turn_button_rect().collidepoint(mx, my):
-                            game.process_command(cmd_end_turn(game.current_player))
-                        elif renderer.get_clicked_attack_button(mx, my):
-                            if game.selected_card:
-                                game.process_command(cmd_toggle_attack_mode(game.current_player))
                         else:
-                            ability_id = renderer.get_clicked_ability(mx, my)
-                            if ability_id and game.selected_card:
-                                if game.awaiting_priority and ability_id == "luck":
-                                    renderer.open_dice_popup(game.selected_card)
-                                else:
-                                    game.process_command(cmd_use_ability(
-                                        game.current_player,
-                                        game.selected_card.id,
-                                        ability_id
-                                    ))
-                            else:
-                                pos = renderer.screen_to_pos(mx, my)
-                                if pos is not None:
-                                    game.handle_click(pos)
+                            handle_game_left_click(game, renderer, mx, my)
 
                 elif event.button == 3:  # Right click
                     if app_state in (AppState.DECK_BUILDER, AppState.DECK_SELECT) and deck_builder_renderer:
@@ -486,7 +610,12 @@ def main():
                                 if card:
                                     renderer.show_popup(card)
                                 else:
-                                    game.process_command(cmd_deselect(game.current_player))
+                                    # Use priority_player during priority, else current_player
+                                    if game.awaiting_priority:
+                                        player = game.priority_player
+                                    else:
+                                        player = game.current_player
+                                    game.process_command(cmd_deselect(player))
 
         # Process visual events
         if app_state == AppState.GAME and game:

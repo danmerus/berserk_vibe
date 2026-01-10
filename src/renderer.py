@@ -991,7 +991,7 @@ class Renderer:
         elif game.has_forced_attack:
             glow_intensity = 0.5 + 0.5 * math.sin(self.priority_glow_timer)
             # Highlight cards that must attack
-            for card_id, (card, targets) in game.forced_attackers.items():
+            for card_id in game.forced_attackers:
                 glowing_card_ids.add(card_id)
 
         # Draw ground cards

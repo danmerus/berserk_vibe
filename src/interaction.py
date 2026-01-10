@@ -141,11 +141,13 @@ def interaction_select_defender(
     attacker_id: int,
     target_id: int,
     valid_defender_ids: Tuple[int, ...],
-    valid_positions: Tuple[int, ...]
+    valid_positions: Tuple[int, ...],
+    defending_player: int
 ) -> Interaction:
     """Create defender selection interaction."""
     return Interaction(
         kind=InteractionKind.SELECT_DEFENDER,
+        acting_player=defending_player,
         actor_id=attacker_id,
         target_id=target_id,
         valid_card_ids=valid_defender_ids,
@@ -157,11 +159,13 @@ def interaction_select_target(
     actor_id: int,
     ability_id: str,
     valid_positions: Tuple[int, ...],
+    acting_player: int,
     valid_card_ids: Tuple[int, ...] = ()
 ) -> Interaction:
     """Create ability target selection interaction."""
     return Interaction(
         kind=InteractionKind.SELECT_ABILITY_TARGET,
+        acting_player=acting_player,
         actor_id=actor_id,
         valid_positions=valid_positions,
         valid_card_ids=valid_card_ids,
@@ -171,11 +175,13 @@ def interaction_select_target(
 
 def interaction_counter_shot(
     shooter_id: int,
-    valid_positions: Tuple[int, ...]
+    valid_positions: Tuple[int, ...],
+    acting_player: int
 ) -> Interaction:
     """Create counter shot target selection interaction."""
     return Interaction(
         kind=InteractionKind.SELECT_COUNTER_SHOT,
+        acting_player=acting_player,
         actor_id=shooter_id,
         valid_positions=valid_positions,
     )
@@ -183,11 +189,13 @@ def interaction_counter_shot(
 
 def interaction_movement_shot(
     shooter_id: int,
-    valid_positions: Tuple[int, ...]
+    valid_positions: Tuple[int, ...],
+    acting_player: int
 ) -> Interaction:
     """Create movement shot target selection interaction (optional)."""
     return Interaction(
         kind=InteractionKind.SELECT_MOVEMENT_SHOT,
+        acting_player=acting_player,
         actor_id=shooter_id,
         valid_positions=valid_positions,
     )
@@ -196,11 +204,13 @@ def interaction_movement_shot(
 def interaction_valhalla(
     source_id: int,
     valid_positions: Tuple[int, ...],
-    valid_card_ids: Tuple[int, ...]
+    valid_card_ids: Tuple[int, ...],
+    acting_player: int
 ) -> Interaction:
     """Create Valhalla target selection interaction."""
     return Interaction(
         kind=InteractionKind.SELECT_VALHALLA_TARGET,
+        acting_player=acting_player,
         actor_id=source_id,
         valid_positions=valid_positions,
         valid_card_ids=valid_card_ids,
@@ -210,11 +220,13 @@ def interaction_valhalla(
 def interaction_confirm_heal(
     healer_id: int,
     target_id: int,
-    heal_amount: int
+    heal_amount: int,
+    acting_player: int
 ) -> Interaction:
-    """Create heal confirmation interaction."""
+    """Create heal confirmation interaction (target owner confirms)."""
     return Interaction(
         kind=InteractionKind.CONFIRM_HEAL,
+        acting_player=acting_player,
         actor_id=healer_id,
         target_id=target_id,
         context={'heal_amount': heal_amount},
@@ -223,11 +235,13 @@ def interaction_confirm_heal(
 
 def interaction_choose_stench(
     target_id: int,
-    damage_amount: int
+    damage_amount: int,
+    acting_player: int
 ) -> Interaction:
     """Create stench choice interaction (tap or damage)."""
     return Interaction(
         kind=InteractionKind.CHOOSE_STENCH,
+        acting_player=acting_player,
         target_id=target_id,
         context={'damage_amount': damage_amount},
     )
@@ -237,11 +251,13 @@ def interaction_choose_exchange(
     attacker_id: int,
     defender_id: int,
     full_damage: int,
-    reduced_damage: int
+    reduced_damage: int,
+    acting_player: int
 ) -> Interaction:
-    """Create exchange choice interaction (full attack or reduced)."""
+    """Create exchange choice interaction (attacker chooses full or reduced)."""
     return Interaction(
         kind=InteractionKind.CHOOSE_EXCHANGE,
+        acting_player=acting_player,
         actor_id=attacker_id,
         target_id=defender_id,
         context={
@@ -254,11 +270,13 @@ def interaction_choose_exchange(
 def interaction_select_counters(
     card_id: int,
     min_counters: int,
-    max_counters: int
+    max_counters: int,
+    acting_player: int
 ) -> Interaction:
     """Create counter selection interaction."""
     return Interaction(
         kind=InteractionKind.SELECT_COUNTERS,
+        acting_player=acting_player,
         actor_id=card_id,
         min_amount=min_counters,
         max_amount=max_counters,

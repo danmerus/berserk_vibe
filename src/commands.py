@@ -25,6 +25,9 @@ class CommandType(Enum):
     SELECT_POSITION = auto()  # Select by position (for UI clicks)
     DESELECT = auto()
 
+    # Board interaction (high-level click that engine routes)
+    CLICK_BOARD = auto()      # Click on board position - engine determines action
+
     # Movement and attacks
     MOVE = auto()
     ATTACK = auto()
@@ -105,17 +108,24 @@ def cmd_select_position(player: int, position: int) -> Command:
     """Select card at position (for UI clicks)."""
     return Command(CommandType.SELECT_POSITION, player, position=position)
 
+def cmd_click_board(player: int, position: int) -> Command:
+    """Click on board position - engine determines appropriate action."""
+    return Command(CommandType.CLICK_BOARD, player, position=position)
+
 def cmd_deselect(player: int) -> Command:
     return Command(CommandType.DESELECT, player)
 
-def cmd_move(player: int, position: int) -> Command:
-    return Command(CommandType.MOVE, player, position=position)
+def cmd_move(player: int, card_id: int, position: int) -> Command:
+    """Move a card to a position. card_id specifies which card to move."""
+    return Command(CommandType.MOVE, player, card_id=card_id, position=position)
 
-def cmd_attack(player: int, position: int) -> Command:
-    return Command(CommandType.ATTACK, player, position=position)
+def cmd_attack(player: int, card_id: int, position: int) -> Command:
+    """Attack with a card at a target position. card_id specifies the attacker."""
+    return Command(CommandType.ATTACK, player, card_id=card_id, position=position)
 
-def cmd_toggle_attack_mode(player: int) -> Command:
-    return Command(CommandType.TOGGLE_ATTACK_MODE, player)
+def cmd_toggle_attack_mode(player: int, card_id: Optional[int] = None) -> Command:
+    """Toggle attack mode. card_id makes command self-contained for network play."""
+    return Command(CommandType.TOGGLE_ATTACK_MODE, player, card_id=card_id)
 
 def cmd_use_ability(player: int, card_id: int, ability_id: str, target_id: Optional[int] = None) -> Command:
     return Command(CommandType.USE_ABILITY, player, card_id=card_id, ability_id=ability_id, target_id=target_id)
