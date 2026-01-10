@@ -91,17 +91,29 @@ def main():
             elif event.type == pygame.MOUSEWHEEL:
                 # Modern scroll wheel handling
                 mouse_x, mouse_y = renderer.screen_to_game_coords(*pygame.mouse.get_pos())
-                # Card info panel: x=960-1260, y=20-420
-                # Log panel: x=960-1260, y=240-490
-                # Split at y=240: above is card info only, below includes log
-                if mouse_x > 960 and mouse_y >= 20 and mouse_y < 240:
-                    # Upper area - card info only
-                    renderer.scroll_card_info(-event.y)
-                elif mouse_x > 960 and mouse_y >= 240 and mouse_y < 490:
-                    # Log panel area (y=240-490)
-                    renderer.scroll_log(-event.y, game)
-                else:
-                    renderer.scroll_log(-event.y, game)
+
+                # Check if over expanded side panel first (priority for scroll)
+                side_panel_scrolled = False
+                # P2 panels (left side): x < 200
+                if mouse_x < 200 and renderer.expanded_panel_p2:
+                    panel_id = f'p2_{renderer.expanded_panel_p2}'
+                    renderer.scroll_side_panel(event.y, panel_id)
+                    side_panel_scrolled = True
+                # P1 panels (right side): x > 800 and x < 990
+                elif 800 < mouse_x < 990 and renderer.expanded_panel_p1:
+                    panel_id = f'p1_{renderer.expanded_panel_p1}'
+                    renderer.scroll_side_panel(event.y, panel_id)
+                    side_panel_scrolled = True
+
+                if not side_panel_scrolled:
+                    # Card info panel: x=960-1260, y=20-420
+                    # Log panel: x=960-1260, y=240-490
+                    if mouse_x > 960 and mouse_y >= 20 and mouse_y < 240:
+                        renderer.scroll_card_info(-event.y)
+                    elif mouse_x > 960 and mouse_y >= 240 and mouse_y < 490:
+                        renderer.scroll_log(-event.y, game)
+                    else:
+                        renderer.scroll_log(-event.y, game)
 
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 # Convert screen coords to game coords for all click handling
@@ -196,7 +208,12 @@ def main():
                             game.skip_movement_shot()
                         continue
 
+                    # Check side panel tab click (expand/collapse flyers/graveyards)
+                    if renderer.handle_side_panel_click(mouse_x, mouse_y):
+                        continue
+
                     # Check end turn button
+
                     if renderer.get_end_turn_button_rect().collidepoint(mouse_x, mouse_y):
                         if game.phase == GamePhase.MAIN and not game.awaiting_defender:
                             game.end_turn()

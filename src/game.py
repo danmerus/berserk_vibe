@@ -48,7 +48,7 @@ class Game:
 
         # Selected card and available actions
         self.selected_card: Optional[Card] = None
-        self.valid_moves: List[int] = []
+        self._valid_moves_cache: List[int] = []  # Use property valid_moves
         self.valid_attacks: List[int] = []
         self.attack_mode: bool = False  # True when attack button is clicked
 
@@ -98,6 +98,18 @@ class Game:
         if len(self.messages) > 100:  # Keep last 100 messages
             self.messages.pop(0)
 
+    @property
+    def valid_moves(self) -> List[int]:
+        """Get valid moves - returns empty if selected card can't act."""
+        if self.selected_card and not self.selected_card.can_act:
+            return []
+        return self._valid_moves_cache
+
+    @valid_moves.setter
+    def valid_moves(self, value: List[int]):
+        """Set valid moves cache."""
+        self._valid_moves_cache = value
+
     def emit_damage(self, pos: int, amount: int):
         """Emit a damage visual event."""
         if amount > 0 and pos is not None:
@@ -131,6 +143,8 @@ class Game:
         if card.is_alive:
             return False
         self.log(f"{card.name} погиб!")
+        # Reset tapped state for graveyard display
+        card.tapped = False
         if killer and killer.player != card.player:
             card.killed_by_enemy = True
             # Process ON_KILL triggers for the killer
@@ -553,8 +567,12 @@ class Game:
             # Clicking enemy card - check if we're in attack mode and can attack it
             if self.selected_card and self.attack_mode and pos in self.valid_attacks:
                 return self.attack(pos)
-            # Don't deselect when clicking enemy - just ignore
-            return False
+            # Allow selecting enemy cards for viewing (no actions available)
+            self.selected_card = card
+            self.valid_moves = []
+            self.valid_attacks = []
+            self.attack_mode = False
+            return True
 
     def deselect_card(self):
         """Deselect current card."""
