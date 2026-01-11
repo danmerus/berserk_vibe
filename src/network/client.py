@@ -28,7 +28,7 @@ import threading
 from .protocol import (
     Message, MessageType, FrameReader,
     msg_hello, msg_ping, msg_create_match, msg_join_match,
-    msg_command, msg_list_matches,
+    msg_command, msg_list_matches, msg_player_ready, msg_leave_match,
 )
 from ..match import get_content_hash, CommandResult
 from ..commands import Command, Event
@@ -95,6 +95,7 @@ class NetworkClient:
     on_match_created: Optional[Callable[[str], None]] = None
     on_match_joined: Optional[Callable[[int, dict], None]] = None
     on_player_joined: Optional[Callable[[int, str], None]] = None
+    on_ready_status: Optional[Callable[[int, bool, str], None]] = None  # player, is_ready, name
     on_game_start: Optional[Callable[[dict], None]] = None
     on_update: Optional[Callable[[CommandResult], None]] = None
     on_game_over: Optional[Callable[[int], None]] = None
@@ -136,23 +137,46 @@ class NetworkClient:
 
         self.state = ClientState.DISCONNECTED
 
-    def create_match(self, squad: List[str]):
+    def create_match(self, squad: List[str], placed_cards: List[dict] = None):
         """Create a new match."""
         if self.state != ClientState.IN_LOBBY:
             return
-        self._queue_message(msg_create_match(squad))
+        self._queue_message(msg_create_match(squad, placed_cards))
 
-    def join_match(self, match_id: str, squad: List[str]):
+    def join_match(self, match_id: str, squad: List[str], placed_cards: List[dict] = None):
         """Join an existing match."""
         if self.state != ClientState.IN_LOBBY:
             return
-        self._queue_message(msg_join_match(match_id, squad))
+        self._queue_message(msg_join_match(match_id, squad, placed_cards))
 
     def list_matches(self):
         """Request list of open matches."""
         if self.state != ClientState.IN_LOBBY:
             return
         self._queue_message(msg_list_matches())
+
+    def send_ready(self):
+        """Signal that this player is ready to start."""
+        if self.state != ClientState.IN_MATCH:
+            return
+        self._queue_message(msg_player_ready())
+
+    def send_placement_done(self, placed_cards: List[dict]):
+        """Send placement data after deck/squad/placement phase."""
+        if self.state != ClientState.IN_MATCH:
+            return
+        from .protocol import msg_placement_done
+        self._queue_message(msg_placement_done(placed_cards))
+
+    def leave_match(self):
+        """Leave current match."""
+        if self.state != ClientState.IN_MATCH:
+            return
+        self._queue_message(msg_leave_match())
+        self.state = ClientState.IN_LOBBY
+        self.match_id = ""
+        self.player_number = 0
+        self.game = None
 
     def send_command(self, cmd: Command):
         """Send a game command."""
@@ -215,6 +239,14 @@ class NetworkClient:
             self.opponent_name = data.get('player_name', '')
             if self.on_player_joined:
                 self.on_player_joined(data['player'], data.get('player_name', ''))
+
+        elif msg_type == 'ready_status':
+            if self.on_ready_status:
+                self.on_ready_status(
+                    data.get('player', 0),
+                    data.get('is_ready', False),
+                    data.get('player_name', ''),
+                )
 
         elif msg_type == 'game_start':
             self.state = ClientState.IN_MATCH
@@ -360,11 +392,17 @@ class NetworkClient:
                 )
             except Empty:
                 continue
+            except RuntimeError:
+                # Executor shut down during exit
+                break
 
             if msg is None:
                 break  # Shutdown signal
 
-            await self._send_message(msg)
+            try:
+                await self._send_message(msg)
+            except Exception:
+                break  # Connection error
 
     async def _ping_loop(self):
         """Send periodic pings."""
@@ -415,6 +453,13 @@ class NetworkClient:
         elif msg.type == MessageType.PLAYER_JOINED:
             self._incoming.put(('player_joined', {
                 'player': msg.payload.get('player', 0),
+                'player_name': msg.payload.get('player_name', ''),
+            }))
+
+        elif msg.type == MessageType.PLAYER_READY_STATUS:
+            self._incoming.put(('ready_status', {
+                'player': msg.payload.get('player', 0),
+                'is_ready': msg.payload.get('is_ready', False),
                 'player_name': msg.payload.get('player_name', ''),
             }))
 

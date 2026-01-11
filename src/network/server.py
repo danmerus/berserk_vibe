@@ -12,6 +12,7 @@ import ssl
 import logging
 import secrets
 import time
+from dataclasses import replace
 from typing import Dict, Optional
 from pathlib import Path
 
@@ -19,7 +20,7 @@ from .protocol import (
     Message, MessageType, FrameReader,
     msg_welcome, msg_error, msg_pong, msg_match_created, msg_match_joined,
     msg_player_joined, msg_game_start, msg_update, msg_resync, msg_game_over,
-    msg_match_list, msg_player_joined,
+    msg_match_list, msg_player_ready_status,
 )
 from .session import PlayerSession, MatchSession, SessionState
 from ..match import MatchServer, get_content_hash
@@ -201,6 +202,8 @@ class GameServer:
             MessageType.JOIN_MATCH: self._handle_join_match,
             MessageType.LEAVE_MATCH: self._handle_leave_match,
             MessageType.LIST_MATCHES: self._handle_list_matches,
+            MessageType.PLAYER_READY: self._handle_player_ready,
+            MessageType.PLACEMENT_DONE: self._handle_placement_done,
             MessageType.COMMAND: self._handle_command,
             MessageType.REQUEST_RESYNC: self._handle_resync_request,
         }
@@ -265,6 +268,7 @@ class GameServer:
             return
 
         squad = msg.payload.get('squad', [])
+        placed_cards = msg.payload.get('placed_cards', [])
 
         # Generate match ID (6 chars, easy to type)
         match_id = secrets.token_hex(3).upper()
@@ -276,6 +280,7 @@ class GameServer:
             match_id=match_id,
             host_session=session,
             host_squad=squad,
+            host_placed_cards=placed_cards,
         )
         self.matches[match_id] = match
 
@@ -298,6 +303,7 @@ class GameServer:
             match_id = msg.payload.get('match_id', '').upper()
 
         squad = msg.payload.get('squad', [])
+        placed_cards = msg.payload.get('placed_cards', [])
 
         # Find match
         match = self.matches.get(match_id)
@@ -316,14 +322,31 @@ class GameServer:
         # Join as guest
         match.guest_session = session
         match.guest_squad = squad
+        match.guest_placed_cards = placed_cards
         session.match_id = match_id
         session.player_number = 2
         session.state = SessionState.IN_MATCH
 
-        # Create and start the game
-        await self._start_match(match)
+        # Notify both players that they're in the ready phase
+        # Send each player info about both players
+        for player_num in [1, 2]:
+            player_session = match.get_session(player_num)
+            if player_session:
+                opponent = match.get_opponent_session(player_num)
+                # Send match joined confirmation
+                await self._send(player_session, msg_match_joined(
+                    match_id,
+                    player_num,
+                    {},  # No snapshot yet - game not started
+                ))
+                # Send opponent info
+                if opponent:
+                    await self._send(player_session, msg_player_joined(
+                        3 - player_num,
+                        opponent.player_name,
+                    ))
 
-        logger.info(f"Match {match_id}: {session.player_name} joined")
+        logger.info(f"Match {match_id}: {session.player_name} joined, waiting for ready")
 
     async def _handle_leave_match(self, session: PlayerSession, msg: Message):
         """Handle leave match request."""
@@ -356,6 +379,62 @@ class GameServer:
         ]
         await self._send(session, msg_match_list(open_matches))
 
+    async def _handle_player_ready(self, session: PlayerSession, msg: Message):
+        """Handle player ready signal - just broadcast status, don't start game yet."""
+        if session.state != SessionState.IN_MATCH:
+            await self._send(session, msg_error("Not in match"))
+            return
+
+        match = self.matches.get(session.match_id)
+        if not match:
+            await self._send(session, msg_error("Match not found"))
+            return
+
+        if match.is_started:
+            return  # Already started, ignore
+
+        # Set this player as ready
+        match.set_ready(session.player_number, True)
+        logger.info(f"Match {match.match_id}: Player {session.player_number} ({session.player_name}) is ready")
+
+        # Notify both players of ready status (clients will transition to deck selection when both ready)
+        for player_num in [1, 2]:
+            player_session = match.get_session(player_num)
+            if player_session:
+                await self._send(player_session, msg_player_ready_status(
+                    session.player_number,
+                    True,
+                    session.player_name,
+                ))
+
+    async def _handle_placement_done(self, session: PlayerSession, msg: Message):
+        """Handle placement data from a player after deck/squad/placement phase."""
+        if session.state != SessionState.IN_MATCH:
+            await self._send(session, msg_error("Not in match"))
+            return
+
+        match = self.matches.get(session.match_id)
+        if not match:
+            await self._send(session, msg_error("Match not found"))
+            return
+
+        if match.is_started:
+            return  # Already started, ignore
+
+        placed_cards = msg.payload.get('placed_cards', [])
+
+        # Store placement for this player
+        if session.player_number == 1:
+            match.host_placed_cards = placed_cards
+            logger.info(f"Match {match.match_id}: Host placement received")
+        else:
+            match.guest_placed_cards = placed_cards
+            logger.info(f"Match {match.match_id}: Guest placement received")
+
+        # If both placements received, start the game
+        if match.host_placed_cards and match.guest_placed_cards:
+            await self._start_match(match)
+
     # =========================================================================
     # HANDLER: GAME
     # =========================================================================
@@ -367,27 +446,25 @@ class GameServer:
 
         # Create game server
         match.server = MatchServer()
-        match.server.setup_game(match.host_squad, match.guest_squad)
+
+        # Use placement data if available, otherwise auto-place
+        if match.host_placed_cards and match.guest_placed_cards:
+            # Convert dicts back to Card objects
+            from ..card import Card
+            p1_cards = [Card.from_dict(d) for d in match.host_placed_cards]
+            p2_cards = [Card.from_dict(d) for d in match.guest_placed_cards]
+            match.server.setup_with_placement(p1_cards, p2_cards)
+        else:
+            match.server.setup_game(match.host_squad, match.guest_squad)
+
         match.is_started = True
 
-        # Send initial state to both players
+        # Send game start to both players
         for player_num in [1, 2]:
             session = match.get_session(player_num)
             if session:
                 snapshot = match.server.get_snapshot(for_player=player_num)
-                await self._send(session, msg_match_joined(
-                    match.match_id,
-                    player_num,
-                    snapshot,
-                ))
-
-                # Notify about opponent
-                opponent = match.get_opponent_session(player_num)
-                if opponent:
-                    await self._send(session, msg_player_joined(
-                        3 - player_num,
-                        opponent.player_name,
-                    ))
+                await self._send(session, msg_game_start(snapshot))
 
         logger.info(f"Match {match.match_id} started")
 
@@ -415,8 +492,8 @@ class GameServer:
             await self._send(session, msg_error(f"Invalid command: {e}"))
             return
 
-        # Force player number from session (security)
-        cmd.player = session.player_number
+        # Force player number from session (security) - Command is frozen, so create new one
+        cmd = replace(cmd, player=session.player_number)
 
         # Process command
         result = match.server.apply(cmd, include_snapshot=True)

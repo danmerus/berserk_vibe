@@ -145,6 +145,7 @@ class Game:
         self.phase = GamePhase.SETUP
         self.current_player = 1
         self.turn_number = 0
+        self.winner: Optional[int] = None  # Set when game ends (by concede or elimination)
 
         # Player states (encapsulates per-player data)
         self.player_states: Dict[int, PlayerState] = {
@@ -233,6 +234,7 @@ class Game:
             'phase': self.phase.name,
             'current_player': self.current_player,
             'turn_number': self.turn_number,
+            'winner': self.winner,
 
             # Valhalla queue (list of tuples -> list of lists for JSON)
             'pending_valhalla': [[card_id, ability_id] for card_id, ability_id in self.pending_valhalla],
@@ -258,6 +260,12 @@ class Game:
 
             # Server-authoritative dice rolls (pending injected rolls)
             '_pending_rolls': self._pending_rolls,
+
+            # Message log (server-generated, needs to be synced to clients)
+            'messages': self.messages,
+
+            # Combat result display (server-generated)
+            'last_combat': self.last_combat.to_dict() if self.last_combat else None,
         }
 
         # UI STATE - client-local, included for save/load but not network sync
@@ -267,12 +275,6 @@ class Game:
                 'player_states': {
                     str(k): v.to_dict() for k, v in self.player_states.items()
                 },
-
-                # Combat result display
-                'last_combat': self.last_combat.to_dict() if self.last_combat else None,
-
-                # Message log
-                'messages': self.messages,
             })
 
         return result
@@ -344,6 +346,7 @@ class Game:
         game.phase = GamePhase[data['phase']]
         game.current_player = data['current_player']
         game.turn_number = data['turn_number']
+        game.winner = data.get('winner')
 
         # Build card lookup for player state hand reconstruction
         cards_by_id = {}
@@ -1427,10 +1430,24 @@ class Game:
 
     def _execute_ability(self, card: Card, ability: Ability, target: Card) -> bool:
         """Execute an ability on a target."""
+        from .abilities import EffectType
+
         # Check for registered handler first
         handler = get_handler(ability.id)
         if handler:
             return handler(self, card, target, ability)
+
+        # Handle effect_type based abilities
+        if ability.effect_type == EffectType.APPLY_WEBBED:
+            # Web ability - apply webbed status to target
+            if card != target:
+                self.emit_arrow(card.position, target.position, 'ability')
+            target.webbed = True
+            self.log(f"{card.name} использует {ability.name}: {target.name} опутан!")
+            self.emit_clear_arrows()
+            card.tap()
+            card.put_ability_on_cooldown(ability.id, ability.cooldown)
+            return True
 
         # Heal
         if ability.heal_amount > 0:
@@ -3399,5 +3416,12 @@ class Game:
                 self.end_turn()
                 return True, self.pop_events()
             return False, self.pop_events()
+
+        elif cmd.type == CommandType.CONCEDE:
+            # Player concedes - opponent wins
+            self.phase = GamePhase.GAME_OVER
+            self.winner = 3 - cmd.player  # Opponent wins (1->2, 2->1)
+            self.log(f"Игрок {cmd.player} сдался!")
+            return True, self.pop_events()
 
         return False, self.pop_events()

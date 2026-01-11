@@ -48,6 +48,7 @@ COLOR_HP_BAR_BG = (80, 30, 30)
 class AppState(Enum):
     """Application states."""
     MENU = auto()            # Main menu
+    SETTINGS = auto()        # Settings screen
     GAME = auto()            # In-game (local hotseat)
     DECK_BUILDER = auto()    # Deck building screen
     DECK_SELECT = auto()     # Deck selection for local game
@@ -56,6 +57,16 @@ class AppState(Enum):
     NETWORK_LOBBY = auto()   # Network game lobby (connect/create/join)
     NETWORK_WAITING = auto() # Waiting for opponent to join
     NETWORK_GAME = auto()    # Network game in progress
+
+
+# Available resolutions
+RESOLUTIONS = [
+    (1280, 720),
+    (1366, 768),
+    (1600, 900),
+    (1920, 1080),
+    (2560, 1440),
+]
 
 
 class GamePhase(Enum):

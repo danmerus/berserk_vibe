@@ -94,6 +94,7 @@ class LobbyState(Enum):
     CREATING = auto()      # Creating match
     BROWSE = auto()        # Browsing open matches
     WAITING = auto()       # Waiting for opponent
+    READY = auto()         # Both players connected, ready confirmation
     ERROR = auto()         # Error state
 
 
@@ -119,6 +120,12 @@ class NetworkUI:
     available_matches: List[dict] = field(default_factory=list)  # List of open matches
     matches_loading: bool = False
 
+    # Ready state
+    my_ready: bool = False
+    opponent_ready: bool = False
+    opponent_name: str = ""
+    my_player_number: int = 0
+
     # Error/status
     status_message: str = ""
     error_message: str = ""
@@ -130,9 +137,12 @@ class NetworkUI:
 
     # Squad for network game (set before creating/joining)
     squad: List[str] = field(default_factory=list)
+    placed_cards: List[dict] = field(default_factory=list)  # Cards with positions
 
-    # Callback when game starts
+    # Callbacks
     on_game_start: Optional[Callable[[int, dict], None]] = None
+    on_both_ready: Optional[Callable[[], None]] = None  # Called when both players ready
+    on_connected: Optional[Callable[[], None]] = None  # Called when connected to server
 
     # Server process (if started locally)
     server_process: Optional[subprocess.Popen] = None
@@ -175,6 +185,7 @@ class NetworkUI:
         self.client.on_match_created = self._on_match_created
         self.client.on_match_joined = self._on_match_joined
         self.client.on_player_joined = self._on_player_joined
+        self.client.on_ready_status = self._on_ready_status
         self.client.on_game_start = self._on_game_start
         self.client.on_match_list = self._on_match_list
 
@@ -183,6 +194,9 @@ class NetworkUI:
         self.state = LobbyState.LOBBY
         self.status_message = "Connected!"
         self.error_message = ""
+        # Call external callback
+        if self.on_connected:
+            self.on_connected()
 
     def _on_disconnected(self, reason: str):
         """Called when disconnected."""
@@ -202,15 +216,37 @@ class NetworkUI:
         self.status_message = f"Match created! Code: {match_id}"
 
     def _on_match_joined(self, player: int, snapshot: dict):
-        """Called when joined a match."""
-        self.status_message = f"Joined as Player {player}!"
-        if self.on_game_start:
-            self.on_game_start(player, snapshot)
+        """Called when joined a match - go to ready screen."""
+        self.my_player_number = player
+        self.my_ready = False
+        self.opponent_ready = False
+        self.state = LobbyState.READY
+        self.status_message = f"Вы - Игрок {player}"
 
     def _on_player_joined(self, player: int, player_name: str):
-        """Called when opponent joins."""
-        self.status_message = f"{player_name} joined!"
-        # Game will start via on_match_joined
+        """Called when opponent joins or info received."""
+        self.opponent_name = player_name
+        self.status_message = f"Противник: {player_name}"
+
+    def _on_ready_status(self, player: int, is_ready: bool, player_name: str):
+        """Called when a player's ready status changes."""
+        if player == self.my_player_number:
+            self.my_ready = is_ready
+        else:
+            self.opponent_ready = is_ready
+            if player_name:
+                self.opponent_name = player_name
+
+        if is_ready:
+            if player == self.my_player_number:
+                self.status_message = "Вы готовы! Ожидание противника..."
+            else:
+                self.status_message = f"{self.opponent_name} готов!"
+
+        # Check if both ready - trigger deck selection
+        if self.my_ready and self.opponent_ready:
+            if self.on_both_ready:
+                self.on_both_ready()
 
     def _on_game_start(self, snapshot: dict):
         """Called when game starts."""
@@ -250,22 +286,16 @@ class NetworkUI:
 
     def create_match(self):
         """Create a new match."""
-        if not self.squad:
-            self.error_message = "Select a squad first"
-            return
-
         self.state = LobbyState.CREATING
         self.status_message = "Creating match..."
-        self.client.create_match(self.squad)
+        # Squad/placement sent later via PLACEMENT_DONE after deck/squad/placement phase
+        self.client.create_match([], [])
 
     def join_match_by_id(self, match_id: str):
         """Join a match by its ID."""
-        if not self.squad:
-            self.error_message = "Сначала выберите отряд"
-            return
-
         self.status_message = f"Подключение к игре..."
-        self.client.join_match(match_id, self.squad)
+        # Squad/placement sent later via PLACEMENT_DONE after deck/squad/placement phase
+        self.client.join_match(match_id, [], [])
 
     def disconnect(self):
         """Disconnect from server."""
@@ -346,6 +376,8 @@ class NetworkUI:
             self._draw_waiting_screen()
         elif self.state == LobbyState.BROWSE:
             self._draw_browse_screen()
+        elif self.state == LobbyState.READY:
+            self._draw_ready_screen()
 
         # Status/error/copy messages
         if self.copy_notification and time.time() - self.copy_notification_time < 2.0:
@@ -561,6 +593,80 @@ class NetworkUI:
         # Back to lobby
         self._draw_button("lobby", "Назад", center_x - scaled(80), y, scaled(160), scaled(35))
 
+    def _draw_ready_screen(self):
+        """Draw ready confirmation screen."""
+        center_x = WINDOW_WIDTH // 2
+        y = scaled(120)
+
+        # Title
+        title = self.font_medium.render("Подготовка к игре", True, COLOR_TEXT)
+        self.screen.blit(title, (center_x - title.get_width() // 2, y))
+        y += scaled(60)
+
+        # Player info boxes
+        box_width = scaled(200)
+        box_height = scaled(120)
+        gap = scaled(80)
+
+        # My info (left)
+        my_x = center_x - gap // 2 - box_width
+        my_color = (70, 130, 180) if self.my_player_number == 1 else (180, 70, 70)
+        self._draw_player_box(my_x, y, box_width, box_height,
+                              f"Игрок {self.my_player_number}",
+                              self.player_name, self.my_ready, my_color)
+
+        # Opponent info (right)
+        opp_x = center_x + gap // 2
+        opp_color = (180, 70, 70) if self.my_player_number == 1 else (70, 130, 180)
+        opp_num = 3 - self.my_player_number
+        self._draw_player_box(opp_x, y, box_width, box_height,
+                              f"Игрок {opp_num}",
+                              self.opponent_name or "Ожидание...", self.opponent_ready, opp_color)
+
+        y += box_height + scaled(50)
+
+        # Ready button or waiting message
+        if not self.my_ready:
+            self._draw_button("send_ready", "Готов!", center_x - scaled(100), y, scaled(200), scaled(50))
+        else:
+            if self.opponent_ready:
+                waiting = self.font_medium.render("Запуск игры...", True, (100, 200, 100))
+            else:
+                waiting = self.font_medium.render("Ожидание противника...", True, (150, 150, 150))
+            self.screen.blit(waiting, (center_x - waiting.get_width() // 2, y + scaled(10)))
+
+        y += scaled(80)
+
+        # Cancel button
+        self._draw_button("cancel_ready", "Отмена", center_x - scaled(80), y, scaled(160), scaled(35))
+
+    def _draw_player_box(self, x: int, y: int, width: int, height: int,
+                         title: str, name: str, is_ready: bool, color: tuple):
+        """Draw a player info box."""
+        # Background
+        rect = pygame.Rect(x, y, width, height)
+        pygame.draw.rect(self.screen, (40, 40, 50), rect)
+        pygame.draw.rect(self.screen, color, rect, 3)
+
+        # Title (Player 1 / Player 2)
+        title_surf = self.font_small.render(title, True, color)
+        self.screen.blit(title_surf, (x + (width - title_surf.get_width()) // 2, y + scaled(10)))
+
+        # Name
+        name_surf = self.font_medium.render(name, True, COLOR_TEXT)
+        self.screen.blit(name_surf, (x + (width - name_surf.get_width()) // 2, y + scaled(40)))
+
+        # Ready status
+        if is_ready:
+            status_text = "ГОТОВ"
+            status_color = (100, 200, 100)
+        else:
+            status_text = "не готов"
+            status_color = (150, 150, 150)
+
+        status_surf = self.font_small.render(status_text, True, status_color)
+        self.screen.blit(status_surf, (x + (width - status_surf.get_width()) // 2, y + scaled(80)))
+
     def _draw_input_field(self, field_id: str, x: int, y: int, width: int):
         """Draw an input field using TextInput."""
         if field_id not in self.inputs:
@@ -640,6 +746,17 @@ class NetworkUI:
         elif action == 'cancel':
             self.state = LobbyState.LOBBY
             self.created_match_code = ""
+
+        elif action == 'send_ready':
+            self.client.send_ready()
+
+        elif action == 'cancel_ready':
+            # Leave the match and go back to lobby
+            self.client.leave_match()
+            self.state = LobbyState.LOBBY
+            self.my_ready = False
+            self.opponent_ready = False
+            self.opponent_name = ""
 
         elif action == 'copy_local_ip':
             parts = self.server_address.split(':')

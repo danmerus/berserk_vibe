@@ -41,6 +41,11 @@ class MessageType(Enum):
     PLAYER_JOINED = auto()  # Server → Client: other player joined
     PLAYER_LEFT = auto()    # Server → Client: other player left
 
+    # Ready phase
+    PLAYER_READY = auto()       # Client → Server: player is ready
+    PLAYER_READY_STATUS = auto() # Server → Client: player ready status update
+    PLACEMENT_DONE = auto()     # Client → Server: placement complete, here's the data
+
     # Game
     GAME_START = auto()     # Server → Client: game is starting, initial snapshot
     COMMAND = auto()        # Client → Server: game command
@@ -182,20 +187,20 @@ def msg_welcome(player_id: str) -> Message:
     )
 
 
-def msg_create_match(squad: List[str]) -> Message:
-    """Create a new match with given squad."""
+def msg_create_match(squad: List[str], placed_cards: List[Dict[str, Any]] = None) -> Message:
+    """Create a new match with given squad and placement."""
     return Message(
         type=MessageType.CREATE_MATCH,
-        payload={'squad': squad}
+        payload={'squad': squad, 'placed_cards': placed_cards or []}
     )
 
 
-def msg_join_match(match_id: str, squad: List[str]) -> Message:
-    """Join an existing match."""
+def msg_join_match(match_id: str, squad: List[str], placed_cards: List[Dict[str, Any]] = None) -> Message:
+    """Join an existing match with squad and placement."""
     return Message(
         type=MessageType.JOIN_MATCH,
         match_id=match_id,
-        payload={'squad': squad}
+        payload={'squad': squad, 'placed_cards': placed_cards or []}
     )
 
 
@@ -307,4 +312,34 @@ def msg_match_list(matches: List[Dict[str, Any]]) -> Message:
     return Message(
         type=MessageType.MATCH_LIST,
         payload={'matches': matches}
+    )
+
+
+def msg_leave_match() -> Message:
+    """Leave current match."""
+    return Message(type=MessageType.LEAVE_MATCH)
+
+
+def msg_player_ready() -> Message:
+    """Player is ready to start."""
+    return Message(type=MessageType.PLAYER_READY)
+
+
+def msg_player_ready_status(player: int, is_ready: bool, player_name: str = "") -> Message:
+    """Notify players of ready status update."""
+    return Message(
+        type=MessageType.PLAYER_READY_STATUS,
+        payload={
+            'player': player,
+            'is_ready': is_ready,
+            'player_name': player_name,
+        }
+    )
+
+
+def msg_placement_done(placed_cards: List[Dict[str, Any]]) -> Message:
+    """Send placement data after deck/squad/placement phase."""
+    return Message(
+        type=MessageType.PLACEMENT_DONE,
+        payload={'placed_cards': placed_cards}
     )

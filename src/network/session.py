@@ -107,9 +107,15 @@ class MatchSession:
     is_finished: bool = False
     winner: int = 0
 
+    # Ready states
+    host_ready: bool = False
+    guest_ready: bool = False
+
     # Squad selections (stored until both ready)
     host_squad: list = field(default_factory=list)
     guest_squad: list = field(default_factory=list)
+    host_placed_cards: list = field(default_factory=list)
+    guest_placed_cards: list = field(default_factory=list)
 
     # Creation time for cleanup
     created_at: float = field(default_factory=time.time)
@@ -152,6 +158,26 @@ class MatchSession:
             self.host_session = None
         elif self.guest_session == session:
             self.guest_session = None
+
+    @property
+    def both_ready(self) -> bool:
+        """Check if both players are ready."""
+        return self.host_ready and self.guest_ready
+
+    def set_ready(self, player: int, ready: bool = True):
+        """Set a player's ready state."""
+        if player == 1:
+            self.host_ready = ready
+        elif player == 2:
+            self.guest_ready = ready
+
+    def is_ready(self, player: int) -> bool:
+        """Check if a player is ready."""
+        if player == 1:
+            return self.host_ready
+        elif player == 2:
+            return self.guest_ready
+        return False
 
     def to_dict(self) -> dict:
         """Serialize for match list."""

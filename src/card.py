@@ -292,6 +292,8 @@ class Card:
             'armor_remaining': self.armor_remaining,
             'formation_armor_remaining': self.formation_armor_remaining,
             'formation_armor_max': self.formation_armor_max,
+            'can_attack_flyer': self.can_attack_flyer,
+            'can_attack_flyer_until_turn': self.can_attack_flyer_until_turn,
         }
 
     @classmethod
@@ -327,6 +329,8 @@ class Card:
         card.armor_remaining = data.get('armor_remaining', 0)
         card.formation_armor_remaining = data.get('formation_armor_remaining', 0)
         card.formation_armor_max = data.get('formation_armor_max', 0)
+        card.can_attack_flyer = data.get('can_attack_flyer', False)
+        card.can_attack_flyer_until_turn = data.get('can_attack_flyer_until_turn', 0)
         return card
 
 

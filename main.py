@@ -6,6 +6,7 @@ import pygame
 import sys
 
 from src.constants import WINDOW_WIDTH, WINDOW_HEIGHT, FPS, GamePhase, AppState
+from src.settings import get_resolution, set_resolution
 from src.game import Game
 from src.renderer import Renderer
 from src.commands import (
@@ -13,7 +14,7 @@ from src.commands import (
     cmd_move, cmd_attack, cmd_prepare_flyer_attack,
     cmd_use_ability, cmd_use_instant,
     cmd_confirm, cmd_cancel, cmd_choose_position, cmd_choose_card,
-    cmd_choose_amount, cmd_pass_priority, cmd_skip, cmd_end_turn
+    cmd_choose_amount, cmd_pass_priority, cmd_skip, cmd_end_turn, cmd_concede
 )
 from src.deck_builder import DeckBuilder
 from src.deck_builder_renderer import DeckBuilderRenderer
@@ -42,6 +43,20 @@ def create_local_game_state():
         'placement_renderer': None,
         'placed_cards_p1': None,
         'placed_cards_p2': None,
+    }
+
+
+def create_network_prep_state():
+    """Create fresh network game preparation state."""
+    return {
+        'deck': None,           # Selected deck cards
+        'squad': None,          # Built squad (card names)
+        'placed_cards': None,   # Placed cards with positions
+        'squad_builder': None,
+        'squad_renderer': None,
+        'placement_state': None,
+        'placement_renderer': None,
+        'waiting_for_opponent': False,  # True after placement sent, waiting for game start
     }
 
 
@@ -82,6 +97,17 @@ def send_command(match_client: LocalMatchClient, renderer: Renderer, cmd) -> boo
     if result.events:
         process_events(match_client.game, renderer, result.events)
     return result.accepted
+
+
+def send_network_command(network_client, cmd):
+    """Send command via network client.
+
+    Args:
+        network_client: NetworkClient to send command through
+        cmd: Command to send
+    """
+    if network_client:
+        network_client.send_command(cmd)
 
 
 def handle_priority_click(match_client, game, client, renderer, mx: int, my: int) -> bool:
@@ -318,13 +344,289 @@ def handle_game_left_click(match_client, game, client, renderer, mx: int, my: in
     return handle_board_click(match_client, game, client, renderer, mx, my)
 
 
+# =============================================================================
+# NETWORK GAME CLICK HANDLERS
+# =============================================================================
+
+def handle_network_board_click(network_client, game, client, renderer, mx: int, my: int, player: int) -> bool:
+    """Handle clicks on the game board for network play. Returns True if handled."""
+    pos = renderer.screen_to_pos(mx, my)
+    if pos is not None:
+        # During interactions, use acting_player
+        if game.interaction and game.interaction.acting_player:
+            acting_player = game.interaction.acting_player
+        else:
+            acting_player = game.current_player
+
+        # Only allow actions if we're the acting player
+        if acting_player != player:
+            # Allow card selection for viewing, but no actions
+            card = game.board.get_card(pos)
+            if card:
+                client.select_card(card.id)
+            else:
+                client.deselect()
+            return True
+
+        # Handle interaction states
+        if game.awaiting_ability_target or game.awaiting_counter_shot or game.awaiting_movement_shot:
+            if game.interaction and game.interaction.can_select_position(pos):
+                send_network_command(network_client, cmd_choose_position(player, pos))
+                return True
+            else:
+                # Clicking on invalid position - cancel the ability targeting
+                send_network_command(network_client, cmd_cancel(player))
+                client.deselect()
+                return True
+
+        if game.awaiting_valhalla:
+            if game.interaction and game.interaction.can_select_position(pos):
+                send_network_command(network_client, cmd_choose_position(player, pos))
+                return True
+            else:
+                # Clicking outside valhalla targets - just deselect visually
+                # (valhalla usually has limited skip options)
+                return True
+
+        if game.awaiting_defender:
+            card = game.board.get_card(pos)
+            if card and game.interaction and game.interaction.can_select_card_id(card.id):
+                send_network_command(network_client, cmd_choose_card(player, card.id))
+                return True
+            else:
+                # Clicking outside valid defenders - skip defender selection
+                send_network_command(network_client, cmd_skip(player))
+                return True
+
+        # If a card is selected and clicking on a valid move/attack position
+        if client.selected_card and client.selected_card.player == player:
+            if pos in client.ui.valid_moves:
+                send_network_command(network_client, cmd_move(player, client.selected_card.id, pos))
+                return True
+            if pos in client.ui.valid_attacks:
+                send_network_command(network_client, cmd_attack(player, client.selected_card.id, pos))
+                return True
+
+        # Client-side selection/deselection
+        card = game.board.get_card(pos)
+        if card:
+            client.select_card(card.id)
+        else:
+            client.deselect()
+        return True
+    return False
+
+
+def handle_network_ui_click(network_client, game, client, renderer, mx: int, my: int, player: int) -> bool:
+    """Handle clicks on UI elements for network play. Returns True if handled."""
+    # Skip button - check if we're the acting player
+    if renderer.get_skip_button_rect().collidepoint(mx, my):
+        if game.interaction and game.interaction.acting_player:
+            acting_player = game.interaction.acting_player
+        else:
+            acting_player = game.current_player
+
+        if acting_player == player:
+            send_network_command(network_client, cmd_skip(player))
+        return True
+
+    if renderer.handle_side_panel_click(mx, my):
+        return True
+
+    # End turn button - only current player can end turn
+    if renderer.get_end_turn_button_rect().collidepoint(mx, my):
+        if game.current_player == player:
+            # Cancel ability targeting if active
+            if game.awaiting_ability_target:
+                send_network_command(network_client, cmd_cancel(player))
+            send_network_command(network_client, cmd_end_turn(player))
+            client.deselect()
+        return True
+
+    if renderer.get_clicked_attack_button(mx, my):
+        if client.selected_card:
+            # Cancel ability targeting if active
+            if game.awaiting_ability_target:
+                send_network_command(network_client, cmd_cancel(player))
+            client.toggle_attack_mode()
+            return True
+
+    return False
+
+
+def handle_network_ability_click(network_client, game, client, renderer, mx: int, my: int, player: int) -> bool:
+    """Handle clicks on ability buttons for network play. Returns True if handled."""
+    # Only allow ability use if it's our turn
+    if game.current_player != player:
+        return False
+
+    # Prepare flyer attack button
+    if (renderer.prepare_flyer_button_rect and
+        renderer.prepare_flyer_button_rect.collidepoint(mx, my) and
+        client.selected_card):
+        # Cancel ability targeting if active
+        if game.awaiting_ability_target:
+            send_network_command(network_client, cmd_cancel(player))
+        send_network_command(network_client, cmd_prepare_flyer_attack(player, client.selected_card.id))
+        return True
+
+    ability_id = renderer.get_clicked_ability(mx, my)
+    if ability_id and client.selected_card:
+        # Cancel ability targeting if clicking a different ability
+        if game.awaiting_ability_target:
+            send_network_command(network_client, cmd_cancel(player))
+        if game.awaiting_priority and ability_id == "luck":
+            renderer.open_dice_popup(client.selected_card)
+        else:
+            send_network_command(network_client, cmd_use_ability(player, client.selected_card.id, ability_id))
+        return True
+    return False
+
+
+def handle_network_interaction_click(network_client, game, client, renderer, mx: int, my: int, player: int) -> bool:
+    """Handle clicks during popup/interaction states for network play. Returns True if handled."""
+    # Check if we're the acting player for this interaction
+    if game.interaction and game.interaction.acting_player:
+        acting_player = game.interaction.acting_player
+    else:
+        acting_player = game.current_player
+
+    if acting_player != player:
+        return False
+
+    if game.awaiting_counter_selection:
+        opt = renderer.get_clicked_counter_button(mx, my)
+        if opt == 'confirm':
+            send_network_command(network_client, cmd_confirm(player, True))
+            return True
+        elif opt == 'cancel':
+            send_network_command(network_client, cmd_cancel(player))
+            return True
+        elif isinstance(opt, int):
+            send_network_command(network_client, cmd_choose_amount(player, opt))
+            return True
+
+    if game.awaiting_heal_confirm:
+        choice = renderer.get_clicked_heal_button(mx, my)
+        if choice == 'yes':
+            send_network_command(network_client, cmd_confirm(player, True))
+            return True
+        elif choice == 'no':
+            send_network_command(network_client, cmd_confirm(player, False))
+            return True
+
+    if game.awaiting_exchange_choice:
+        choice = renderer.get_clicked_exchange_button(mx, my)
+        if choice == 'full':
+            send_network_command(network_client, cmd_confirm(player, True))
+            return True
+        elif choice == 'reduce':
+            send_network_command(network_client, cmd_confirm(player, False))
+            return True
+
+    if game.awaiting_stench_choice:
+        choice = renderer.get_clicked_stench_button(mx, my)
+        if choice == 'tap':
+            send_network_command(network_client, cmd_confirm(player, True))
+            return True
+        elif choice == 'damage':
+            send_network_command(network_client, cmd_confirm(player, False))
+            return True
+
+    return False
+
+
+def handle_network_priority_click(network_client, game, client, renderer, mx: int, my: int, player: int) -> bool:
+    """Handle clicks during priority phase for network play. Returns True if handled."""
+    priority_player = game.priority_player
+
+    if renderer.dice_popup_open:
+        opt = renderer.get_clicked_dice_option(mx, my)
+        if opt == 'cancel':
+            renderer.close_dice_popup()
+            return True
+        elif opt:
+            card = renderer.dice_popup_card
+            if card and priority_player == player:
+                send_network_command(network_client, cmd_use_instant(player, card.id, "luck", opt))
+                renderer.close_dice_popup()
+                return True
+
+    # Pass priority button
+    if renderer.get_pass_button_rect().collidepoint(mx, my):
+        if priority_player == player:
+            renderer.close_dice_popup()
+            send_network_command(network_client, cmd_pass_priority(player))
+        return True
+
+    # Allow clicking on cards and abilities during priority
+    ability_id = renderer.get_clicked_ability(mx, my)
+    if ability_id and client.selected_card:
+        if ability_id == "luck":
+            card = client.selected_card
+            is_combat_participant = False
+            if game.pending_dice_roll:
+                dice = game.pending_dice_roll
+                combat_ids = {dice.attacker_id, dice.defender_id}
+                is_combat_participant = card.id in combat_ids
+            if not is_combat_participant:
+                renderer.open_dice_popup(client.selected_card)
+                return True
+
+    # Card selection during priority
+    pos = renderer.screen_to_pos(mx, my)
+    if pos is not None:
+        card = game.board.get_card(pos)
+        if card:
+            client.select_card(card.id)
+        else:
+            client.deselect()
+        return True
+
+    return False
+
+
+def handle_network_game_click(network_client, game, client, renderer, mx: int, my: int, player: int) -> bool:
+    """
+    Handle left click during network game. Returns True if handled.
+    Routes to appropriate handler based on game state.
+    """
+    # Handle popup drag attempts first
+    if renderer.start_popup_drag(mx, my, game):
+        return True
+    if renderer.start_log_scrollbar_drag(mx, my):
+        return True
+
+    # Priority phase has special handling
+    if game.awaiting_priority:
+        return handle_network_priority_click(network_client, game, client, renderer, mx, my, player)
+
+    # Check for interaction popups (counter, heal, exchange, stench)
+    if handle_network_interaction_click(network_client, game, client, renderer, mx, my, player):
+        return True
+
+    # Check UI elements (buttons, panels)
+    if handle_network_ui_click(network_client, game, client, renderer, mx, my, player):
+        return True
+
+    # Check ability clicks
+    if handle_network_ability_click(network_client, game, client, renderer, mx, my, player):
+        return True
+
+    # Finally, handle board clicks
+    return handle_network_board_click(network_client, game, client, renderer, mx, my, player)
+
+
 def main():
     """Main game loop."""
     pygame.init()
     pygame.display.set_caption("Берсерк - Цифровая версия")
     pygame.key.set_repeat(300, 30)
 
-    screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.RESIZABLE)
+    # Load saved resolution or use default
+    saved_resolution = get_resolution()
+    current_resolution = saved_resolution
+    screen = pygame.display.set_mode(current_resolution, pygame.RESIZABLE)
     clock = pygame.time.Clock()
     fullscreen = False
 
@@ -336,18 +638,45 @@ def main():
     game = None  # Shared game reference
     client = None  # Current active GameClient (switches based on turn)
     renderer = Renderer(screen)
+    renderer.handle_resize(screen)  # Apply saved resolution scaling
 
     deck_builder = None
     deck_builder_renderer = None
     local_game_state = create_local_game_state()
+    network_prep_state = None  # Network game preparation state
     network_ui = None  # Network lobby UI
     network_client = None  # Network client for multiplayer
 
+    # Network game state
+    network_game = None  # Game instance for network play
+    network_player = 0  # Which player we are (1 or 2)
+    network_game_client = None  # GameClient for network play
+
+    # Pause menu state
+    show_pause_menu = False
+
+    # Test game mode flag and side control (None = auto-switch based on turn, 1 or 2 = manual control)
+    is_test_game = False
+    test_game_controlled_player = None
+
     running = True
     while running:
-        # Switch clients based on whose turn it is (hotseat mode) - must happen before events
+        # Switch clients based on who needs to act
         if app_state == AppState.GAME and game and client_p1 and client_p2:
-            if game.current_player == 1:
+            # Determine the active player (who needs to make a decision)
+            if is_test_game:
+                # Test game: auto-switch to whoever needs to act
+                if game.awaiting_priority:
+                    active_player = game.priority_player
+                elif game.interaction and game.interaction.acting_player:
+                    active_player = game.interaction.acting_player
+                else:
+                    active_player = game.current_player
+            else:
+                # Normal hotseat: switch based on turn
+                active_player = game.current_player
+
+            if active_player == 1:
                 match_client = client_p1
             else:
                 match_client = client_p2
@@ -387,7 +716,23 @@ def main():
                         network_ui.handle_text_input(event)
 
                 elif app_state == AppState.GAME and game and client and match_client:
-                    if event.key == pygame.K_RETURN and game.phase == GamePhase.SETUP:
+                    if event.key == pygame.K_ESCAPE:
+                        if show_pause_menu:
+                            show_pause_menu = False
+                        elif renderer.popup_card:
+                            renderer.hide_popup()
+                        elif renderer.dice_popup_open:
+                            renderer.close_dice_popup()
+                        elif game.awaiting_ability_target:
+                            # Cancel ability targeting
+                            player = game.current_player
+                            send_command(match_client, renderer, cmd_cancel(player))
+                            client.deselect()
+                        elif client.selected_card:
+                            client.deselect()
+                        else:
+                            show_pause_menu = True
+                    elif event.key == pygame.K_RETURN and game.phase == GamePhase.SETUP:
                         game.finish_placement()
                     elif event.key == pygame.K_y and game.awaiting_heal_confirm:
                         # Use interaction's acting_player for heal confirm
@@ -396,6 +741,33 @@ def main():
                     elif event.key == pygame.K_n and game.awaiting_heal_confirm:
                         player = game.interaction.acting_player if game.interaction else game.current_player
                         send_command(match_client, renderer, cmd_confirm(player, False))
+
+                elif app_state == AppState.NETWORK_GAME and network_game and network_game_client:
+                    if event.key == pygame.K_ESCAPE:
+                        if show_pause_menu:
+                            show_pause_menu = False
+                        elif renderer.popup_card:
+                            renderer.hide_popup()
+                        elif renderer.dice_popup_open:
+                            renderer.close_dice_popup()
+                        elif network_game.awaiting_ability_target:
+                            # Cancel ability targeting
+                            send_network_command(network_client, cmd_cancel(network_player))
+                            network_game_client.deselect()
+                        elif network_game_client.selected_card:
+                            # Deselect current card
+                            network_game_client.deselect()
+                        else:
+                            # Nothing selected - open pause menu
+                            show_pause_menu = True
+                    elif event.key == pygame.K_y and network_game.awaiting_heal_confirm:
+                        acting_player = network_game.interaction.acting_player if network_game.interaction else network_game.current_player
+                        if acting_player == network_player:
+                            send_network_command(network_client, cmd_confirm(network_player, True))
+                    elif event.key == pygame.K_n and network_game.awaiting_heal_confirm:
+                        acting_player = network_game.interaction.acting_player if network_game.interaction else network_game.current_player
+                        if acting_player == network_player:
+                            send_network_command(network_client, cmd_confirm(network_player, False))
 
                 elif app_state in (AppState.DECK_BUILDER, AppState.DECK_SELECT) and deck_builder_renderer:
                     if deck_builder_renderer.text_input_active:
@@ -416,11 +788,12 @@ def main():
                                 local_game_state = create_local_game_state()
                             app_state = AppState.MENU
 
-                elif app_state == AppState.SQUAD_SELECT and local_game_state['squad_renderer']:
-                    if event.key == pygame.K_ESCAPE and local_game_state['squad_renderer'].popup_card_name:
-                        local_game_state['squad_renderer'].hide_card_popup()
+                elif app_state == AppState.SQUAD_SELECT:
+                    sr = (network_prep_state and network_prep_state.get('squad_renderer')) or local_game_state.get('squad_renderer')
+                    if sr and event.key == pygame.K_ESCAPE and sr.popup_card_name:
+                        sr.hide_card_popup()
 
-                elif app_state == AppState.SQUAD_PLACE and local_game_state['placement_state']:
+                elif app_state == AppState.SQUAD_PLACE:
                     if event.key == pygame.K_ESCAPE and renderer.popup_card:
                         renderer.hide_popup()
 
@@ -432,12 +805,20 @@ def main():
                 elif app_state == AppState.GAME:
                     renderer.stop_popup_drag()
                     renderer.stop_log_scrollbar_drag()
+                elif app_state == AppState.NETWORK_GAME:
+                    renderer.stop_popup_drag()
+                    renderer.stop_log_scrollbar_drag()
                 elif app_state in (AppState.DECK_BUILDER, AppState.DECK_SELECT) and deck_builder_renderer:
                     deck_builder_renderer.stop_scrollbar_drag()
-                elif app_state == AppState.SQUAD_PLACE and local_game_state['placement_state']:
-                    ps = local_game_state['placement_state']
-                    pr = local_game_state['placement_renderer']
-                    if ps.dragging_card:
+                elif app_state == AppState.SQUAD_PLACE:
+                    # Get from network prep or local state
+                    if network_prep_state and network_prep_state.get('placement_state'):
+                        ps = network_prep_state['placement_state']
+                        pr = network_prep_state['placement_renderer']
+                    else:
+                        ps = local_game_state.get('placement_state')
+                        pr = local_game_state.get('placement_renderer')
+                    if ps and pr and ps.dragging_card:
                         mx, my = renderer.screen_to_game_coords(*event.pos)
                         drop_pos = pr.get_drop_position(mx, my, ps)
                         if drop_pos is not None:
@@ -447,6 +828,11 @@ def main():
             elif event.type == pygame.MOUSEMOTION:
                 gx, gy = renderer.screen_to_game_coords(*event.pos)
                 if app_state == AppState.GAME:
+                    if renderer.dragging_popup:
+                        renderer.drag_popup(gx, gy)
+                    elif renderer.log_scrollbar_dragging:
+                        renderer.drag_log_scrollbar(gy)
+                elif app_state == AppState.NETWORK_GAME:
                     if renderer.dragging_popup:
                         renderer.drag_popup(gx, gy)
                     elif renderer.log_scrollbar_dragging:
@@ -474,18 +860,33 @@ def main():
                             renderer.scroll_log(-event.y, game)
                     else:
                         renderer.scroll_log(-event.y, game)
+                elif app_state == AppState.NETWORK_GAME and network_game and network_game_client:
+                    # Side panel scroll
+                    if mx < 200 and renderer.expanded_panel_p2:
+                        renderer.scroll_side_panel(event.y, f'p2_{renderer.expanded_panel_p2}')
+                    elif 800 < mx < 990 and renderer.expanded_panel_p1:
+                        renderer.scroll_side_panel(event.y, f'p1_{renderer.expanded_panel_p1}')
+                    elif mx > 960:
+                        if my < 240:
+                            renderer.scroll_card_info(-event.y)
+                        else:
+                            renderer.scroll_log(-event.y, network_game)
+                    else:
+                        renderer.scroll_log(-event.y, network_game)
                 elif app_state in (AppState.DECK_BUILDER, AppState.DECK_SELECT) and deck_builder_renderer:
                     from src.constants import UILayout, scaled
                     if my < scaled(UILayout.DECK_BUILDER_DECK_Y):
                         deck_builder_renderer.scroll_library(event.y)
                     else:
                         deck_builder_renderer.scroll_deck(event.y)
-                elif app_state == AppState.SQUAD_SELECT and local_game_state['squad_renderer']:
-                    from src.constants import UILayout, scaled
-                    if my < scaled(UILayout.DECK_BUILDER_DECK_Y):
-                        local_game_state['squad_renderer'].scroll_hand(event.y)
-                    else:
-                        local_game_state['squad_renderer'].scroll_squad(event.y)
+                elif app_state == AppState.SQUAD_SELECT:
+                    sr = (network_prep_state and network_prep_state.get('squad_renderer')) or local_game_state.get('squad_renderer')
+                    if sr:
+                        from src.constants import UILayout, scaled
+                        if my < scaled(UILayout.DECK_BUILDER_DECK_Y):
+                            sr.scroll_hand(event.y)
+                        else:
+                            sr.scroll_squad(event.y)
 
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 mx, my = renderer.screen_to_game_coords(*event.pos)
@@ -503,6 +904,7 @@ def main():
                             game = server.game
                             match_client = client_p1  # P1 starts
                             client = match_client.game_client
+                            is_test_game = True
                             app_state = AppState.GAME
                         elif btn == 'local_game':
                             local_game_state = create_local_game_state()
@@ -518,18 +920,82 @@ def main():
                             deck_builder_renderer = DeckBuilderRenderer(s, ci, f)
                             app_state = AppState.DECK_BUILDER
                         elif btn == 'network_game':
-                            # Initialize network UI
+                            # Go to network lobby first, deck/squad/placement after ready
                             network_ui = NetworkUI(
                                 screen=renderer.screen,
                                 font_large=renderer.font_large,
                                 font_medium=renderer.font_medium,
                                 font_small=renderer.font_small,
                             )
-                            # Use starter deck for now (TODO: deck selection)
-                            network_ui.squad = create_starter_deck()
+
+                            # Callback when both players ready - start deck selection
+                            def on_both_ready():
+                                nonlocal app_state, network_prep_state, deck_builder, deck_builder_renderer
+                                network_prep_state = create_network_prep_state()
+                                deck_builder = DeckBuilder()
+                                s, ci, _, f = renderer.get_deck_builder_resources()
+                                deck_builder_renderer = DeckBuilderRenderer(s, ci, f)
+                                deck_builder_renderer.selection_mode = True
+                                deck_builder_renderer.custom_header = "Выбор колоды - Сетевая игра"
+                                app_state = AppState.DECK_SELECT
+
+                            # Callback when game actually starts (server has both placements)
+                            def on_network_game_start(player: int, snapshot: dict):
+                                nonlocal app_state, network_game, network_player, network_game_client, network_client, network_prep_state
+                                network_player = player
+                                network_game = Game.from_dict(snapshot)
+                                network_game_client = GameClient(network_game, player)
+                                # Set network_client now that game is starting
+                                network_client = network_ui.client
+                                network_prep_state = None
+                                app_state = AppState.NETWORK_GAME
+
+                            # Set up update callback for visual effects
+                            def on_network_update(result):
+                                nonlocal network_game, network_game_client
+                                # Update game reference from client's authoritative state
+                                if network_ui.client and network_ui.client.game:
+                                    network_game = network_ui.client.game
+                                    # IMPORTANT: Also update GameClient's game reference
+                                    if network_game_client:
+                                        network_game_client.game = network_game
+                                        # Refresh UI state after game state change
+                                        network_game_client.refresh_selection()
+                                if result.events and network_game:
+                                    process_events(network_game, renderer, result.events)
+
+                            # Callback to set up on_update when client connects
+                            def on_client_connected():
+                                if network_ui.client:
+                                    network_ui.client.on_update = on_network_update
+
+                            network_ui.on_connected = on_client_connected
+                            network_ui.on_both_ready = on_both_ready
+                            network_ui.on_game_start = on_network_game_start
                             app_state = AppState.NETWORK_LOBBY
+                        elif btn == 'settings':
+                            app_state = AppState.SETTINGS
                         elif btn == 'exit':
                             running = False
+
+                    # Settings screen
+                    elif app_state == AppState.SETTINGS:
+                        btn = renderer.get_clicked_settings_button(mx, my)
+                        if btn == 'back':
+                            app_state = AppState.MENU
+                        elif btn and btn.startswith('res_'):
+                            # Parse resolution from button id (res_WIDTH_HEIGHT)
+                            parts = btn.split('_')
+                            new_width = int(parts[1])
+                            new_height = int(parts[2])
+                            current_size = renderer.window.get_size()
+                            if (new_width, new_height) != current_size:
+                                # Update resolution
+                                current_resolution = (new_width, new_height)
+                                screen = pygame.display.set_mode(current_resolution, pygame.RESIZABLE)
+                                renderer = Renderer(screen)
+                                fullscreen = False
+                                set_resolution(new_width, new_height)  # Save for next launch
 
                     # Network lobby
                     elif app_state == AppState.NETWORK_LOBBY and network_ui:
@@ -566,30 +1032,47 @@ def main():
                             if btn:
                                 if app_state == AppState.DECK_SELECT and btn == 'confirm_selection':
                                     if deck_builder.is_valid():
-                                        player = local_game_state['current_player']
                                         deck_cards = deck_builder.get_deck_card_list()
-                                        if player == 1:
-                                            local_game_state['deck_p1'] = deck_cards
-                                            local_game_state['current_player'] = 2
-                                            deck_builder = DeckBuilder()
-                                            s, ci, _, f = renderer.get_deck_builder_resources()
-                                            deck_builder_renderer = DeckBuilderRenderer(s, ci, f)
-                                            deck_builder_renderer.selection_mode = True
-                                            deck_builder_renderer.custom_header = "Выбор колоды - Игрок 2"
-                                        else:
-                                            local_game_state['deck_p2'] = deck_cards
-                                            local_game_state['current_player'] = 1
-                                            sb = SquadBuilder(player=1, deck_cards=local_game_state['deck_p1'])
+                                        # Check if preparing for network game
+                                        if network_prep_state is not None:
+                                            network_prep_state['deck'] = deck_cards
+                                            # Use actual player number from network UI
+                                            my_player = network_ui.my_player_number if network_ui else 1
+                                            sb = SquadBuilder(player=my_player, deck_cards=deck_cards)
                                             s, ci, _, f = renderer.get_deck_builder_resources()
                                             sr = SquadBuilderRenderer(s, ci, f)
-                                            local_game_state['squad_builder'] = sb
-                                            local_game_state['squad_renderer'] = sr
+                                            sr.custom_header = "Набор отряда - Сетевая игра"
+                                            network_prep_state['squad_builder'] = sb
+                                            network_prep_state['squad_renderer'] = sr
                                             app_state = AppState.SQUAD_SELECT
+                                        else:
+                                            # Local game flow
+                                            player = local_game_state['current_player']
+                                            if player == 1:
+                                                local_game_state['deck_p1'] = deck_cards
+                                                local_game_state['current_player'] = 2
+                                                deck_builder = DeckBuilder()
+                                                s, ci, _, f = renderer.get_deck_builder_resources()
+                                                deck_builder_renderer = DeckBuilderRenderer(s, ci, f)
+                                                deck_builder_renderer.selection_mode = True
+                                                deck_builder_renderer.custom_header = "Выбор колоды - Игрок 2"
+                                            else:
+                                                local_game_state['deck_p2'] = deck_cards
+                                                local_game_state['current_player'] = 1
+                                                sb = SquadBuilder(player=1, deck_cards=local_game_state['deck_p1'])
+                                                s, ci, _, f = renderer.get_deck_builder_resources()
+                                                sr = SquadBuilderRenderer(s, ci, f)
+                                                local_game_state['squad_builder'] = sb
+                                                local_game_state['squad_renderer'] = sr
+                                                app_state = AppState.SQUAD_SELECT
                                     else:
                                         deck_builder_renderer.show_notification("Колода должна содержать 30-50 карт")
                                 elif btn == 'back':
                                     if app_state == AppState.DECK_SELECT:
-                                        local_game_state = create_local_game_state()
+                                        if network_prep_state is not None:
+                                            network_prep_state = None
+                                        else:
+                                            local_game_state = create_local_game_state()
                                     app_state = AppState.MENU
                                 else:
                                     result = deck_builder_renderer.handle_button_action(btn, deck_builder)
@@ -613,94 +1096,170 @@ def main():
                                             deck_builder.remove_card(card)
 
                     # Squad selection
-                    elif app_state == AppState.SQUAD_SELECT and local_game_state['squad_renderer']:
-                        sb = local_game_state['squad_builder']
-                        sr = local_game_state['squad_renderer']
-                        if sr.popup_card_name:
-                            sr.hide_card_popup()
+                    elif app_state == AppState.SQUAD_SELECT:
+                        # Get squad builder/renderer from appropriate state
+                        if network_prep_state and network_prep_state['squad_renderer']:
+                            sb = network_prep_state['squad_builder']
+                            sr = network_prep_state['squad_renderer']
+                        elif local_game_state['squad_renderer']:
+                            sb = local_game_state['squad_builder']
+                            sr = local_game_state['squad_renderer']
                         else:
-                            btn = sr.get_clicked_button(mx, my)
-                            if btn == 'mulligan':
-                                if sb.mulligan():
-                                    sr.show_notification("Карты пересданы")
-                                else:
-                                    sr.show_notification("Недостаточно золота")
-                            elif btn == 'confirm':
-                                if sb.is_valid():
-                                    player = local_game_state['current_player']
-                                    squad = sb.finalize()
-                                    if player == 1:
-                                        local_game_state['squad_p1'] = squad
-                                        local_game_state['current_player'] = 2
-                                        sb = SquadBuilder(player=2, deck_cards=local_game_state['deck_p2'])
-                                        s, ci, _, f = renderer.get_deck_builder_resources()
-                                        sr = SquadBuilderRenderer(s, ci, f)
-                                        local_game_state['squad_builder'] = sb
-                                        local_game_state['squad_renderer'] = sr
+                            sb = sr = None
+
+                        if sb and sr:
+                            if sr.popup_card_name:
+                                sr.hide_card_popup()
+                            else:
+                                btn = sr.get_clicked_button(mx, my)
+                                if btn == 'mulligan':
+                                    if sb.mulligan():
+                                        sr.show_notification("Карты пересданы")
                                     else:
-                                        local_game_state['squad_p2'] = squad
-                                        local_game_state['current_player'] = 1
-                                        ps = PlacementState(player=1, squad_cards=local_game_state['squad_p1'])
-                                        s, ci, _, f = renderer.get_deck_builder_resources()
-                                        pr = PlacementRenderer(s, ci, f)
-                                        local_game_state['placement_state'] = ps
-                                        local_game_state['placement_renderer'] = pr
-                                        app_state = AppState.SQUAD_PLACE
-                            elif not btn:
-                                card = sr.get_clicked_hand_card(mx, my)
-                                if card:
-                                    if not sb.add_card(card):
-                                        _, reason = sb.can_add_card(card)
-                                        sr.show_notification(reason)
-                                else:
-                                    card = sr.get_clicked_squad_card(mx, my)
+                                        sr.show_notification("Недостаточно золота")
+                                elif btn == 'confirm':
+                                    if sb.is_valid():
+                                        squad = sb.finalize()
+                                        # Check if preparing for network game
+                                        if network_prep_state is not None:
+                                            network_prep_state['squad'] = squad
+                                            # Use actual player number from network UI
+                                            my_player = network_ui.my_player_number if network_ui else 1
+                                            ps = PlacementState(player=my_player, squad_cards=squad)
+                                            s, ci, _, f = renderer.get_deck_builder_resources()
+                                            pr = PlacementRenderer(s, ci, f)
+                                            pr.custom_header = "Расстановка - Сетевая игра"
+                                            network_prep_state['placement_state'] = ps
+                                            network_prep_state['placement_renderer'] = pr
+                                            app_state = AppState.SQUAD_PLACE
+                                        else:
+                                            # Local game flow
+                                            player = local_game_state['current_player']
+                                            if player == 1:
+                                                local_game_state['squad_p1'] = squad
+                                                local_game_state['current_player'] = 2
+                                                sb = SquadBuilder(player=2, deck_cards=local_game_state['deck_p2'])
+                                                s, ci, _, f = renderer.get_deck_builder_resources()
+                                                sr = SquadBuilderRenderer(s, ci, f)
+                                                local_game_state['squad_builder'] = sb
+                                                local_game_state['squad_renderer'] = sr
+                                            else:
+                                                local_game_state['squad_p2'] = squad
+                                                local_game_state['current_player'] = 1
+                                                ps = PlacementState(player=1, squad_cards=local_game_state['squad_p1'])
+                                                s, ci, _, f = renderer.get_deck_builder_resources()
+                                                pr = PlacementRenderer(s, ci, f)
+                                                local_game_state['placement_state'] = ps
+                                                local_game_state['placement_renderer'] = pr
+                                                app_state = AppState.SQUAD_PLACE
+                                elif not btn:
+                                    card = sr.get_clicked_hand_card(mx, my)
                                     if card:
-                                        sb.remove_card(card)
+                                        if not sb.add_card(card):
+                                            _, reason = sb.can_add_card(card)
+                                            sr.show_notification(reason)
+                                    else:
+                                        card = sr.get_clicked_squad_card(mx, my)
+                                        if card:
+                                            sb.remove_card(card)
 
                     # Placement phase
-                    elif app_state == AppState.SQUAD_PLACE and local_game_state['placement_state']:
-                        ps = local_game_state['placement_state']
-                        pr = local_game_state['placement_renderer']
-                        if pr.is_confirm_clicked(mx, my) and ps.is_complete():
-                            player = local_game_state['current_player']
-                            cards = ps.finalize()
-                            if player == 1:
-                                local_game_state['placed_cards_p1'] = cards
-                                local_game_state['current_player'] = 2
-                                ps = PlacementState(player=2, squad_cards=local_game_state['squad_p2'])
-                                s, ci, _, f = renderer.get_deck_builder_resources()
-                                pr = PlacementRenderer(s, ci, f)
-                                local_game_state['placement_state'] = ps
-                                local_game_state['placement_renderer'] = pr
-                            else:
-                                local_game_state['placed_cards_p2'] = cards
-                                server = MatchServer()
-                                server.setup_with_placement(
-                                    local_game_state['placed_cards_p1'],
-                                    local_game_state['placed_cards_p2']
-                                )
-                                client_p1 = LocalMatchClient(server, player=1)
-                                client_p2 = LocalMatchClient(server, player=2)
-                                game = server.game
-                                match_client = client_p1  # P1 starts
-                                client = match_client.game_client
-                                app_state = AppState.GAME
+                    elif app_state == AppState.SQUAD_PLACE:
+                        # Get placement state from appropriate source
+                        if network_prep_state and network_prep_state['placement_state']:
+                            ps = network_prep_state['placement_state']
+                            pr = network_prep_state['placement_renderer']
+                        elif local_game_state['placement_state']:
+                            ps = local_game_state['placement_state']
+                            pr = local_game_state['placement_renderer']
                         else:
-                            card = pr.get_unplaced_card_at(mx, my)
-                            if card:
-                                ox, oy = pr.get_card_center_offset()
-                                ps.start_drag(card, ox, oy)
+                            ps = pr = None
+
+                        if ps and pr:
+                            if pr.is_confirm_clicked(mx, my) and ps.is_complete():
+                                # Don't allow confirm if already waiting
+                                if network_prep_state and network_prep_state.get('waiting_for_opponent'):
+                                    pass  # Already sent, just waiting
+                                else:
+                                    placed_cards = ps.finalize()
+                                    # Check if preparing for network game
+                                    if network_prep_state is not None:
+                                        network_prep_state['placed_cards'] = placed_cards
+                                        # Send placement to server and wait (convert cards to dicts for serialization)
+                                        if network_ui and network_ui.client:
+                                            placed_cards_data = [card.to_dict() for card in placed_cards]
+                                            network_ui.client.send_placement_done(placed_cards_data)
+                                            network_prep_state['waiting_for_opponent'] = True
+                                    else:
+                                        # Local game flow
+                                        player = local_game_state['current_player']
+                                        if player == 1:
+                                            local_game_state['placed_cards_p1'] = placed_cards
+                                            local_game_state['current_player'] = 2
+                                            ps = PlacementState(player=2, squad_cards=local_game_state['squad_p2'])
+                                            s, ci, _, f = renderer.get_deck_builder_resources()
+                                            pr = PlacementRenderer(s, ci, f)
+                                            local_game_state['placement_state'] = ps
+                                            local_game_state['placement_renderer'] = pr
+                                        else:
+                                            local_game_state['placed_cards_p2'] = placed_cards
+                                            server = MatchServer()
+                                            server.setup_with_placement(
+                                                local_game_state['placed_cards_p1'],
+                                                local_game_state['placed_cards_p2']
+                                            )
+                                            client_p1 = LocalMatchClient(server, player=1)
+                                            client_p2 = LocalMatchClient(server, player=2)
+                                            game = server.game
+                                            match_client = client_p1  # P1 starts
+                                            client = match_client.game_client
+                                            app_state = AppState.GAME
                             else:
-                                pos = pr.get_placed_position_at(mx, my)
-                                if pos is not None:
-                                    card = ps.unplace_card(pos)
-                                    if card:
-                                        ox, oy = pr.get_card_center_offset()
-                                        ps.start_drag(card, ox, oy)
+                                card = pr.get_unplaced_card_at(mx, my)
+                                if card:
+                                    ox, oy = pr.get_card_center_offset()
+                                    ps.start_drag(card, ox, oy)
+                                else:
+                                    pos = pr.get_placed_position_at(mx, my)
+                                    if pos is not None:
+                                        card = ps.unplace_card(pos)
+                                        if card:
+                                            ox, oy = pr.get_card_center_offset()
+                                            ps.start_drag(card, ox, oy)
 
                     # Game state - use refactored click handler
                     elif app_state == AppState.GAME and client_p1 and game and client:
-                        if renderer.game_over_popup:
+                        if show_pause_menu:
+                            btn = renderer.get_clicked_pause_button(mx, my)
+                            if btn == "resume":
+                                show_pause_menu = False
+                            elif btn == "concede":
+                                # In local game, just end the game
+                                game.winner = 2 if game.current_player == 1 else 1
+                                game.phase = GamePhase.GAME_OVER
+                                show_pause_menu = False
+                            elif btn == "exit":
+                                # Exit to menu
+                                show_pause_menu = False
+                                server = None
+                                client_p1 = None
+                                client_p2 = None
+                                match_client = None
+                                game = None
+                                client = None
+                                is_test_game = False
+                                test_game_controlled_player = None
+                                app_state = AppState.MENU
+                                local_game_state = create_local_game_state()
+                            elif btn and btn.startswith("res_"):
+                                parts = btn.split("_")
+                                if len(parts) == 3:
+                                    new_w, new_h = int(parts[1]), int(parts[2])
+                                    current_resolution = (new_w, new_h)
+                                    screen = pygame.display.set_mode(current_resolution, pygame.RESIZABLE)
+                                    renderer.handle_resize(screen)
+                                    set_resolution(new_w, new_h)
+                        elif renderer.game_over_popup:
                             if renderer.is_game_over_button_clicked(mx, my):
                                 renderer.hide_game_over_popup()
                                 server = None
@@ -709,12 +1268,51 @@ def main():
                                 match_client = None
                                 game = None
                                 client = None
+                                is_test_game = False
+                                test_game_controlled_player = None
                                 app_state = AppState.MENU
                                 local_game_state = create_local_game_state()
                         elif renderer.popup_card:
                             renderer.hide_popup()
                         else:
                             handle_game_left_click(match_client, game, client, renderer, mx, my)
+
+                    # Network game state
+                    elif app_state == AppState.NETWORK_GAME and network_game and network_game_client:
+                        if show_pause_menu:
+                            # Handle pause menu clicks
+                            btn = renderer.get_clicked_pause_button(mx, my)
+                            if btn == "resume":
+                                show_pause_menu = False
+                            elif btn == "concede":
+                                send_network_command(network_client, cmd_concede(network_player))
+                                show_pause_menu = False
+                            elif btn and btn.startswith("res_"):
+                                # Resolution change
+                                parts = btn.split("_")
+                                if len(parts) == 3:
+                                    new_w, new_h = int(parts[1]), int(parts[2])
+                                    current_resolution = (new_w, new_h)
+                                    screen = pygame.display.set_mode(current_resolution, pygame.RESIZABLE)
+                                    renderer.handle_resize(screen)
+                                    set_resolution(new_w, new_h)  # Save for next launch
+                        elif renderer.game_over_popup:
+                            if renderer.is_game_over_button_clicked(mx, my):
+                                renderer.hide_game_over_popup()
+                                network_game = None
+                                network_game_client = None
+                                network_client = None
+                                network_player = 0
+                                network_ui = None
+                                app_state = AppState.MENU
+                        elif renderer.popup_card:
+                            renderer.hide_popup()
+                        else:
+                            # Handle network game clicks
+                            handle_network_game_click(
+                                network_client, network_game, network_game_client,
+                                renderer, mx, my, network_player
+                            )
 
                 elif event.button == 3:  # Right click
                     if app_state in (AppState.DECK_BUILDER, AppState.DECK_SELECT) and deck_builder_renderer:
@@ -727,26 +1325,32 @@ def main():
                             if card:
                                 deck_builder_renderer.show_card_popup(card)
 
-                    elif app_state == AppState.SQUAD_SELECT and local_game_state['squad_renderer']:
-                        sr = local_game_state['squad_renderer']
-                        if sr.popup_card_name:
-                            sr.hide_card_popup()
-                        else:
-                            card = sr.get_clicked_hand_card(mx, my)
-                            if not card:
-                                card = sr.get_clicked_squad_card(mx, my)
-                            if card:
-                                sr.show_card_popup(card)
+                    elif app_state == AppState.SQUAD_SELECT:
+                        sr = (network_prep_state and network_prep_state.get('squad_renderer')) or local_game_state.get('squad_renderer')
+                        if sr:
+                            if sr.popup_card_name:
+                                sr.hide_card_popup()
+                            else:
+                                card = sr.get_clicked_hand_card(mx, my)
+                                if not card:
+                                    card = sr.get_clicked_squad_card(mx, my)
+                                if card:
+                                    sr.show_card_popup(card)
 
-                    elif app_state == AppState.SQUAD_PLACE and local_game_state['placement_state']:
-                        ps = local_game_state['placement_state']
-                        pr = local_game_state['placement_renderer']
-                        if renderer.popup_card:
-                            renderer.hide_popup()
+                    elif app_state == AppState.SQUAD_PLACE:
+                        if network_prep_state and network_prep_state.get('placement_state'):
+                            ps = network_prep_state['placement_state']
+                            pr = network_prep_state['placement_renderer']
                         else:
-                            card = pr.get_card_at(mx, my, ps)
-                            if card:
-                                renderer.show_popup(card)
+                            ps = local_game_state.get('placement_state')
+                            pr = local_game_state.get('placement_renderer')
+                        if ps and pr:
+                            if renderer.popup_card:
+                                renderer.hide_popup()
+                            else:
+                                card = pr.get_card_at(mx, my, ps)
+                                if card:
+                                    renderer.show_popup(card)
 
                     elif app_state == AppState.GAME and game and client:
                         if renderer.popup_card:
@@ -763,6 +1367,20 @@ def main():
                                     # Client-side deselection
                                     client.deselect()
 
+                    elif app_state == AppState.NETWORK_GAME and network_game and network_game_client:
+                        if renderer.popup_card:
+                            renderer.hide_popup()
+                        else:
+                            card = renderer.get_card_at_screen_pos(network_game, mx, my)
+                            if card:
+                                renderer.show_popup(card)
+                            else:
+                                card = renderer.get_graveyard_card_at_pos(network_game, mx, my)
+                                if card:
+                                    renderer.show_popup(card)
+                                else:
+                                    network_game_client.deselect()
+
         # Process any remaining game events (from turn start triggers, etc.)
         if app_state == AppState.GAME and game and client:
             events = game.pop_events()
@@ -773,6 +1391,10 @@ def main():
         dt = clock.tick(FPS) / 1000.0
         if app_state == AppState.MENU:
             renderer.draw_menu()
+        elif app_state == AppState.SETTINGS:
+            # Get current window size for highlighting
+            current_res = (renderer.window.get_width(), renderer.window.get_height())
+            renderer.draw_settings(current_res)
         elif app_state == AppState.NETWORK_LOBBY and network_ui:
             network_ui.update()  # Poll for network events
             network_ui.draw()
@@ -782,27 +1404,87 @@ def main():
             _, _, cif, _ = renderer.get_deck_builder_resources()
             deck_builder_renderer.draw(deck_builder, cif)
             renderer.finalize_frame()
-        elif app_state == AppState.SQUAD_SELECT and local_game_state['squad_builder']:
-            sr = local_game_state['squad_renderer']
-            sb = local_game_state['squad_builder']
-            sr.update_notification()
-            _, _, cif, _ = renderer.get_deck_builder_resources()
-            sr.draw(sb, cif)
-            renderer.finalize_frame()
-        elif app_state == AppState.SQUAD_PLACE and local_game_state['placement_state']:
-            ps = local_game_state['placement_state']
-            pr = local_game_state['placement_renderer']
-            mouse_pos = renderer.screen_to_game_coords(*pygame.mouse.get_pos())
-            pr.draw(ps, mouse_pos)
-            if renderer.popup_card:
-                renderer.draw_popup()
-            renderer.finalize_frame()
+        elif app_state == AppState.SQUAD_SELECT:
+            # Get from network prep or local state
+            if network_prep_state and network_prep_state.get('squad_builder'):
+                sr = network_prep_state['squad_renderer']
+                sb = network_prep_state['squad_builder']
+            else:
+                sr = local_game_state.get('squad_renderer')
+                sb = local_game_state.get('squad_builder')
+            if sr and sb:
+                sr.update_notification()
+                _, _, cif, _ = renderer.get_deck_builder_resources()
+                sr.draw(sb, cif)
+                renderer.finalize_frame()
+        elif app_state == AppState.SQUAD_PLACE:
+            # Get from network prep or local state
+            if network_prep_state and network_prep_state.get('placement_state'):
+                ps = network_prep_state['placement_state']
+                pr = network_prep_state['placement_renderer']
+                # Poll network client for game start
+                if network_ui and network_ui.client:
+                    network_ui.client.poll()
+            else:
+                ps = local_game_state.get('placement_state')
+                pr = local_game_state.get('placement_renderer')
+            if ps and pr:
+                mouse_pos = renderer.screen_to_game_coords(*pygame.mouse.get_pos())
+                pr.draw(ps, mouse_pos)
+                # Show waiting message if waiting for opponent
+                if network_prep_state and network_prep_state.get('waiting_for_opponent'):
+                    # Draw slim banner at bottom
+                    banner_height = 50
+                    banner_y = 720 - banner_height - 20
+                    banner = pygame.Surface((400, banner_height), pygame.SRCALPHA)
+                    banner.fill((0, 0, 0, 200))
+                    renderer.screen.blit(banner, (440, banner_y))
+                    text = renderer.font_medium.render("Ожидание противника...", True, (255, 255, 255))
+                    text_rect = text.get_rect(center=(640, banner_y + banner_height // 2))
+                    renderer.screen.blit(text, text_rect)
+                if renderer.popup_card:
+                    renderer.draw_popup()
+                renderer.finalize_frame()
         elif app_state == AppState.GAME and game and client:
             client.update(dt)  # Update UI animations
             if game.phase == GamePhase.GAME_OVER and not renderer.game_over_popup:
                 winner = game.board.check_winner()
                 renderer.show_game_over_popup(winner if winner is not None else 0)
-            renderer.draw(game, dt, client.ui)
+            renderer.draw(game, dt, client.ui, skip_flip=show_pause_menu)
+            # Draw pause menu overlay if active
+            if show_pause_menu:
+                renderer.draw_pause_menu(current_resolution, is_network_game=False)
+                renderer.finalize_frame()
+        elif app_state == AppState.NETWORK_GAME and network_game and network_game_client:
+            # Poll for network updates
+            if network_client:
+                network_client.poll()
+                # Update game from network client's game state
+                if network_client.game:
+                    network_game = network_client.game
+                    # IMPORTANT: Also update GameClient's game reference
+                    network_game_client.game = network_game
+
+            network_game_client.update(dt)
+            if network_game.phase == GamePhase.GAME_OVER and not renderer.game_over_popup:
+                # Use game.winner if set (from concede), otherwise check board
+                winner = network_game.winner if network_game.winner is not None else network_game.board.check_winner()
+                # Get player names from network UI
+                p1_name, p2_name = None, None
+                if network_ui:
+                    if network_ui.my_player_number == 1:
+                        p1_name = network_ui.player_name
+                        p2_name = network_ui.opponent_name
+                    else:
+                        p1_name = network_ui.opponent_name
+                        p2_name = network_ui.player_name
+                renderer.show_game_over_popup(winner if winner is not None else 0, p1_name, p2_name)
+            # Draw game, skip flip if pause menu will be drawn
+            renderer.draw(network_game, dt, network_game_client.ui, skip_flip=show_pause_menu)
+            # Draw pause menu overlay if active
+            if show_pause_menu:
+                renderer.draw_pause_menu(current_resolution, is_network_game=True)
+                renderer.finalize_frame()  # Scale screen to window and flip
 
     pygame.quit()
     sys.exit()

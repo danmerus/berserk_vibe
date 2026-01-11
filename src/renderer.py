@@ -65,6 +65,9 @@ class Renderer:
         self.offset_y = 0
         self._update_scale()
 
+        # Which player's perspective to render from (1 = P1 at bottom, 2 = P2 at bottom)
+        self.viewing_player = 1
+
         self.font_large = pygame.font.Font(None, scaled(UILayout.FONT_LARGE + 8))
         self.font_medium = pygame.font.Font(None, scaled(UILayout.FONT_MEDIUM + 6))
         self.font_small = pygame.font.Font(None, scaled(UILayout.FONT_SMALL + 6))
@@ -177,6 +180,12 @@ class Renderer:
 
         # Priority phase animation
         self.priority_glow_timer: float = 0.0  # Cycles 0-2π for sine wave
+
+        # Card movement animation
+        # Maps card_id -> {'from_x': int, 'from_y': int, 'to_x': int, 'to_y': int, 'progress': float}
+        self.card_animations: Dict[int, dict] = {}
+        self.card_last_positions: Dict[int, int] = {}  # card_id -> last known board position
+        self.CARD_MOVE_DURATION = 0.25  # Animation duration in seconds
 
         # Dice popup state
         self.dice_popup_open: bool = False
@@ -351,8 +360,13 @@ class Renderer:
         if Board.FLYING_P1_START <= pos < Board.FLYING_P1_START + Board.FLYING_SLOTS:
             idx = pos - Board.FLYING_P1_START
             if self.is_panel_expanded('p1_flyers'):
-                panel_x = scaled(UILayout.SIDE_PANEL_P1_X)
-                content_y = scaled(UILayout.SIDE_PANEL_P1_Y) + tab_height + spacing
+                # For player 2's view, P1's flyers appear on left side (P2's panel position)
+                if self.viewing_player == 2:
+                    panel_x = scaled(UILayout.SIDE_PANEL_P2_X)
+                    content_y = scaled(UILayout.SIDE_PANEL_P2_Y) + tab_height + spacing
+                else:
+                    panel_x = scaled(UILayout.SIDE_PANEL_P1_X)
+                    content_y = scaled(UILayout.SIDE_PANEL_P1_Y) + tab_height + spacing
                 scroll = self.side_panel_scroll.get('p1_flyers', 0)
                 x = panel_x + (panel_width - card_size) // 2
                 y = content_y + 5 + idx * (card_size + card_spacing) - scroll
@@ -364,8 +378,13 @@ class Renderer:
         elif Board.FLYING_P2_START <= pos < Board.FLYING_P2_START + Board.FLYING_SLOTS:
             idx = pos - Board.FLYING_P2_START
             if self.is_panel_expanded('p2_flyers'):
-                panel_x = scaled(UILayout.SIDE_PANEL_P2_X)
-                content_y = scaled(UILayout.SIDE_PANEL_P2_Y) + tab_height + spacing
+                # For player 2's view, P2's flyers appear on right side (P1's panel position)
+                if self.viewing_player == 2:
+                    panel_x = scaled(UILayout.SIDE_PANEL_P1_X)
+                    content_y = scaled(UILayout.SIDE_PANEL_P1_Y) + tab_height + spacing
+                else:
+                    panel_x = scaled(UILayout.SIDE_PANEL_P2_X)
+                    content_y = scaled(UILayout.SIDE_PANEL_P2_Y) + tab_height + spacing
                 scroll = self.side_panel_scroll.get('p2_flyers', 0)
                 x = panel_x + (panel_width - card_size) // 2
                 y = content_y + 5 + idx * (card_size + card_spacing) - scroll
@@ -376,9 +395,18 @@ class Renderer:
 
         col = pos % BOARD_COLS
         row = pos // BOARD_COLS
-        # Flip Y so player 1 is at bottom
-        screen_row = BOARD_ROWS - 1 - row
-        x = BOARD_OFFSET_X + col * CELL_SIZE
+
+        # Flip board for perspective (rotate 180 degrees for player 2)
+        if self.viewing_player == 2:
+            # Player 2: their back row (row 5) at bottom, flip columns too
+            screen_row = row
+            screen_col = BOARD_COLS - 1 - col
+        else:
+            # Player 1 (default): their back row (row 0) at bottom
+            screen_row = BOARD_ROWS - 1 - row
+            screen_col = col
+
+        x = BOARD_OFFSET_X + screen_col * CELL_SIZE
         y = BOARD_OFFSET_Y + screen_row * CELL_SIZE
         return x, y
 
@@ -392,14 +420,22 @@ class Renderer:
             return flying_pos
 
         # Standard board
-        col = (screen_x - BOARD_OFFSET_X) // CELL_SIZE
+        screen_col = (screen_x - BOARD_OFFSET_X) // CELL_SIZE
         screen_row = (screen_y - BOARD_OFFSET_Y) // CELL_SIZE
 
-        if not (0 <= col < BOARD_COLS and 0 <= screen_row < BOARD_ROWS):
+        if not (0 <= screen_col < BOARD_COLS and 0 <= screen_row < BOARD_ROWS):
             return None
 
-        # Flip Y back
-        row = BOARD_ROWS - 1 - screen_row
+        # Convert screen coordinates back to board position based on perspective
+        if self.viewing_player == 2:
+            # Player 2: screen row = board row, flip columns back
+            row = screen_row
+            col = BOARD_COLS - 1 - screen_col
+        else:
+            # Player 1 (default): flip Y back
+            row = BOARD_ROWS - 1 - screen_row
+            col = screen_col
+
         return row * BOARD_COLS + col
 
     def draw_board(self, game: Game):
@@ -430,8 +466,11 @@ class Renderer:
     def draw_highlights(self, game: Game):
         """Draw movement, attack, and defender highlights for board only.
         Flying position highlights are drawn in draw_side_panels."""
+        # Only show interaction highlights to the acting player
+        is_acting = (game.interaction and game.interaction.acting_player == self.viewing_player)
+
         # Counter shot target mode - highlight valid targets (board only)
-        if game.awaiting_counter_shot and game.interaction:
+        if game.awaiting_counter_shot and game.interaction and is_acting:
             for pos in game.interaction.valid_positions:
                 if self._is_flying_pos(pos):
                     continue  # Skip flying - handled in side panels
@@ -440,7 +479,7 @@ class Renderer:
             return
 
         # Movement shot target mode - highlight valid targets (board only)
-        if game.awaiting_movement_shot and game.interaction:
+        if game.awaiting_movement_shot and game.interaction and is_acting:
             for pos in game.interaction.valid_positions:
                 if self._is_flying_pos(pos):
                     continue
@@ -449,7 +488,7 @@ class Renderer:
             return
 
         # Valhalla target mode - highlight valid targets (board only)
-        if game.awaiting_valhalla and game.interaction:
+        if game.awaiting_valhalla and game.interaction and is_acting:
             for pos in game.interaction.valid_positions:
                 if self._is_flying_pos(pos):
                     continue
@@ -458,7 +497,7 @@ class Renderer:
             return
 
         # Defender choice mode - highlight valid defenders (board only)
-        if game.awaiting_defender and game.interaction:
+        if game.awaiting_defender and game.interaction and is_acting:
             # Highlight original target in red
             target = game.get_card_by_id(game.interaction.target_id)
             if target and target.position is not None and not self._is_flying_pos(target.position):
@@ -473,7 +512,7 @@ class Renderer:
             return
 
         # Ability targeting mode - highlight valid targets (board only)
-        if game.awaiting_ability_target and game.interaction:
+        if game.awaiting_ability_target and game.interaction and is_acting:
             for pos in game.interaction.valid_positions:
                 if self._is_flying_pos(pos):
                     continue
@@ -481,19 +520,20 @@ class Renderer:
                 self.screen.blit(self.ability_highlight, (x, y))
             return
 
-        # Movement highlights (board only)
-        for pos in self._ui.valid_moves:
-            if self._is_flying_pos(pos):
-                continue
-            x, y = self.pos_to_screen(pos)
-            self.screen.blit(self.move_highlight, (x, y))
+        # Movement highlights (board only) - only show if it's our turn
+        if game.current_player == self.viewing_player:
+            for pos in self._ui.valid_moves:
+                if self._is_flying_pos(pos):
+                    continue
+                x, y = self.pos_to_screen(pos)
+                self.screen.blit(self.move_highlight, (x, y))
 
-        # Attack highlights (board only)
-        for pos in self._ui.valid_attacks:
-            if self._is_flying_pos(pos):
-                continue
-            x, y = self.pos_to_screen(pos)
-            self.screen.blit(self.attack_highlight, (x, y))
+            # Attack highlights (board only)
+            for pos in self._ui.valid_attacks:
+                if self._is_flying_pos(pos):
+                    continue
+                x, y = self.pos_to_screen(pos)
+                self.screen.blit(self.attack_highlight, (x, y))
 
     def draw_card(self, card: Card, x: int, y: int, selected: bool = False, glow_intensity: float = 0.0, game: 'Game' = None, glow_color: tuple = None):
         """Draw a single card with image.
@@ -517,8 +557,8 @@ class Renderer:
         if glow_intensity > 0:
             if glow_color is None:
                 glow_color = (255, 220, 100)  # Golden glow (default)
-            glow_alpha = int(100 * glow_intensity)
-            glow_size = int(6 + 4 * glow_intensity)  # Pulsing size
+            glow_alpha = int(180 * glow_intensity)  # Stronger glow (was 100)
+            glow_size = int(10 + 8 * glow_intensity)  # Larger pulsing size (was 6+4)
 
             # Draw multiple glow layers for soft effect
             for i in range(glow_size, 0, -2):
@@ -528,11 +568,12 @@ class Renderer:
                 pygame.draw.rect(glow_surface, (*glow_color, layer_alpha), glow_surface.get_rect(), border_radius=3)
                 self.screen.blit(glow_surface, glow_rect.topleft)
 
-        # Player border color
-        if card.player == 1:
-            border_color = COLOR_PLAYER1
+        # Player border color - based on viewing player perspective
+        # Own cards = yellow/gold, enemy cards = blue
+        if card.player == self.viewing_player:
+            border_color = (180, 150, 50)  # Gold for own cards
         else:
-            border_color = COLOR_PLAYER2
+            border_color = (70, 100, 160)  # Blue for enemy cards
 
         # Draw card background/border
         pygame.draw.rect(self.screen, border_color, card_rect)
@@ -541,10 +582,9 @@ class Renderer:
         name_bar_height = scaled(UILayout.NAME_BAR_HEIGHT)
         name_bar_y = card_rect.y + CARD_HEIGHT - name_bar_height
 
-        # Determine name bar colors based on current player
-        current_player = game.current_player if game else 1
-        if card.player == current_player:
-            name_bar_color = (180, 160, 60)  # Yellow/gold for allied
+        # Determine name bar colors based on viewing player (own vs enemy)
+        if card.player == self.viewing_player:
+            name_bar_color = (180, 160, 60)  # Yellow/gold for own cards
             name_text_color = (40, 30, 0)    # Dark text
         else:
             name_bar_color = (60, 80, 140)   # Blue for enemy
@@ -821,11 +861,12 @@ class Renderer:
         # Card rectangle
         card_rect = pygame.Rect(x, y, size, size)
 
-        # Player border color
-        if card.player == 1:
-            border_color = COLOR_PLAYER1
+        # Player border color - based on viewing player perspective
+        # Own cards = yellow/gold, enemy cards = blue
+        if card.player == self.viewing_player:
+            border_color = (180, 150, 50)  # Gold for own cards
         else:
-            border_color = COLOR_PLAYER2
+            border_color = (70, 100, 160)  # Blue for enemy cards
 
         # Draw card background/border
         pygame.draw.rect(self.screen, border_color, card_rect)
@@ -833,10 +874,9 @@ class Renderer:
         # Name bar dimensions (proportionally smaller)
         name_bar_height = max(12, size // 7)
 
-        # Current player detection for name bar color
-        current_player = game.current_player if game else 1
-        if card.player == current_player:
-            name_bar_color = (180, 160, 60)  # Yellow/gold for allied
+        # Name bar color - based on viewing player
+        if card.player == self.viewing_player:
+            name_bar_color = (180, 160, 60)  # Yellow/gold for own cards
             name_text_color = (40, 30, 0)
         else:
             name_bar_color = (60, 80, 140)  # Blue for enemy
@@ -1003,26 +1043,32 @@ class Renderer:
         glowing_card_ids = set()  # Golden glow (instant abilities, forced attack)
         defender_card_ids = set()  # Red glow (valid defenders)
 
-        if game.awaiting_priority:
-            glow_intensity = 0.5 + 0.5 * math.sin(self.priority_glow_timer)
+        if game.awaiting_priority and game.priority_player == self.viewing_player:
+            # Only show priority glow for the player who has priority
+            # Higher base intensity (0.6-1.0) for better visibility
+            glow_intensity = 0.6 + 0.4 * math.sin(self.priority_glow_timer)
             # Get cards with legal instants for current priority player
             for card, ability in game.get_legal_instants(game.priority_player):
                 glowing_card_ids.add(card.id)
-        elif game.has_forced_attack:
-            glow_intensity = 0.5 + 0.5 * math.sin(self.priority_glow_timer)
+        elif game.has_forced_attack and game.current_player == self.viewing_player:
+            # Only show forced attack glow for the player whose turn it is
+            glow_intensity = 0.6 + 0.4 * math.sin(self.priority_glow_timer)
             # Highlight cards that must attack
             for card_id in game.forced_attackers:
                 glowing_card_ids.add(card_id)
         elif game.awaiting_defender and game.interaction:
-            # Highlight valid defenders with red glow
-            glow_intensity = 0.5 + 0.5 * math.sin(self.priority_glow_timer)
-            for card_id in game.interaction.valid_card_ids:
-                defender_card_ids.add(card_id)
+            # Only show defender glow for the acting player
+            if game.interaction.acting_player == self.viewing_player:
+                glow_intensity = 0.5 + 0.5 * math.sin(self.priority_glow_timer)
+                for card_id in game.interaction.valid_card_ids:
+                    defender_card_ids.add(card_id)
 
         # Draw ground cards
         for pos, card in enumerate(game.board.cells):
             if card is not None:
-                x, y = self.pos_to_screen(pos)
+                base_x, base_y = self.pos_to_screen(pos)
+                # Apply movement animation if active
+                x, y = self.get_card_draw_position(card.id, base_x, base_y)
                 selected = (self._ui.selected_card == card)
                 # Determine glow color based on whether it's a defender or instant ability
                 if card.id in defender_card_ids:
@@ -1059,8 +1105,10 @@ class Renderer:
         self.screen.blit(phase_surface, (20, 80))
 
         # End turn button - use the same rect as click detection
+        # Color based on viewing player (my color), not current player
+        my_color = COLOR_PLAYER1 if self.viewing_player == 1 else COLOR_PLAYER2
         button_rect = self.get_end_turn_button_rect()
-        pygame.draw.rect(self.screen, player_color, button_rect)
+        pygame.draw.rect(self.screen, my_color, button_rect)
         pygame.draw.rect(self.screen, COLOR_TEXT, button_rect, 2)
 
         button_text = "Конец хода"
@@ -1069,32 +1117,35 @@ class Renderer:
         text_y = button_rect.y + (button_rect.height - button_surface.get_height()) // 2
         self.screen.blit(button_surface, (text_x, text_y))
 
-        # Counter shot selection prompt
-        if game.awaiting_counter_shot:
+        # Check if we're the acting player for interaction popups
+        is_acting = (game.interaction and game.interaction.acting_player == self.viewing_player)
+
+        # Counter shot selection prompt (only for acting player)
+        if game.awaiting_counter_shot and is_acting:
             self.draw_counter_shot_prompt(game)
 
-        # Movement shot selection prompt
-        if game.awaiting_movement_shot:
+        # Movement shot selection prompt (only for acting player)
+        if game.awaiting_movement_shot and is_acting:
             self.draw_movement_shot_prompt(game)
 
-        # Heal confirmation prompt
-        if game.awaiting_heal_confirm:
+        # Heal confirmation prompt (only for acting player)
+        if game.awaiting_heal_confirm and is_acting:
             self.draw_heal_confirm_prompt(game)
 
-        # Stench choice prompt
-        if game.awaiting_stench_choice:
+        # Stench choice prompt (only for acting player)
+        if game.awaiting_stench_choice and is_acting:
             self.draw_stench_choice_prompt(game)
 
-        # Exchange choice prompt
-        if game.awaiting_exchange_choice:
+        # Exchange choice prompt (only for acting player)
+        if game.awaiting_exchange_choice and is_acting:
             self.draw_exchange_prompt(game)
 
-        # Valhalla selection prompt
-        if game.awaiting_valhalla:
+        # Valhalla selection prompt (only for acting player)
+        if game.awaiting_valhalla and is_acting:
             self.draw_valhalla_prompt(game)
 
-        # Defender choice prompt
-        if game.awaiting_defender and game.interaction:
+        # Defender choice prompt (only for acting player)
+        if game.awaiting_defender and game.interaction and is_acting:
             self.draw_defender_prompt(game)
 
         # Selected card info
@@ -1104,8 +1155,8 @@ class Renderer:
         # Message log
         self.draw_messages(game)
 
-        # Skip button (only show when something can be skipped)
-        if game.awaiting_defender or game.awaiting_movement_shot:
+        # Skip button (only show when something can be skipped and we're acting)
+        if (game.awaiting_defender or game.awaiting_movement_shot) and is_acting:
             self.draw_skip_button(game)
 
         # Dice panel (shows pending or last combat dice)
@@ -2211,6 +2262,46 @@ class Renderer:
         """Draw unified side panels for flyers and graveyards with card thumbnails."""
         from .board import Board
 
+        # Panel positions are fixed (physical screen locations)
+        # SIDE_PANEL_P2_X is on the LEFT, SIDE_PANEL_P1_X is on the RIGHT
+        left_panel_x = scaled(UILayout.SIDE_PANEL_P2_X)
+        left_panel_y = scaled(UILayout.SIDE_PANEL_P2_Y)
+        right_panel_x = scaled(UILayout.SIDE_PANEL_P1_X)
+        right_panel_y = scaled(UILayout.SIDE_PANEL_P1_Y)
+
+        # Determine which content goes where based on viewing player
+        # For player 2's view, swap content so their cards are on the right
+        if self.viewing_player == 2:
+            left_flyers = game.board.flying_p1  # Opponent flyers on left
+            right_flyers = game.board.flying_p2  # Own flyers on right
+            left_graveyard = game.board.graveyard_p1
+            right_graveyard = game.board.graveyard_p2
+            left_label_flyers = "Летающие П1"
+            right_label_flyers = "Летающие П2"
+            left_label_grave = "Кладбище П1"
+            right_label_grave = "Кладбище П2"
+            left_color = COLOR_PLAYER1
+            right_color = COLOR_PLAYER2
+            left_flyer_panel = 'p1_flyers'
+            right_flyer_panel = 'p2_flyers'
+            left_grave_panel = 'p1_grave'
+            right_grave_panel = 'p2_grave'
+        else:
+            left_flyers = game.board.flying_p2  # Opponent flyers on left
+            right_flyers = game.board.flying_p1  # Own flyers on right
+            left_graveyard = game.board.graveyard_p2
+            right_graveyard = game.board.graveyard_p1
+            left_label_flyers = "Летающие П2"
+            right_label_flyers = "Летающие П1"
+            left_label_grave = "Кладбище П2"
+            right_label_grave = "Кладбище П1"
+            left_color = COLOR_PLAYER2
+            right_color = COLOR_PLAYER1
+            left_flyer_panel = 'p2_flyers'
+            right_flyer_panel = 'p1_flyers'
+            left_grave_panel = 'p2_grave'
+            right_grave_panel = 'p1_grave'
+
         # Auto-expand flying zones if they have flyers (and nothing else expanded for that player)
         has_p1_flyers = any(c is not None for c in game.board.flying_p1)
         has_p2_flyers = any(c is not None for c in game.board.flying_p2)
@@ -2257,121 +2348,117 @@ class Renderer:
 
         self.side_panel_tab_rects = {}
 
-        # ========== P2 ZONES (LEFT side) ==========
-        p2_panel_x = scaled(UILayout.SIDE_PANEL_P2_X)
-        p2_y = scaled(UILayout.SIDE_PANEL_P2_Y)
+        # ========== LEFT SIDE PANEL ==========
+        # Left flyers tab
+        left_flyers_expanded = self.is_panel_expanded(left_flyer_panel)
+        left_flyers_rect = pygame.Rect(left_panel_x, left_panel_y, panel_width, tab_height)
+        self.side_panel_tab_rects[left_flyer_panel] = left_flyers_rect
 
-        # P2 Flyers tab
-        p2_flyers_expanded = self.is_panel_expanded('p2_flyers')
-        p2_flyers_rect = pygame.Rect(p2_panel_x, p2_y, panel_width, tab_height)
-        self.side_panel_tab_rects['p2_flyers'] = p2_flyers_rect
+        left_bg = (80, 50, 50) if left_color == COLOR_PLAYER2 else (50, 60, 80)
+        left_bg_dark = (50, 35, 35) if left_color == COLOR_PLAYER2 else (30, 40, 50)
+        tab_color = left_bg if left_flyers_expanded else left_bg_dark
+        pygame.draw.rect(self.screen, tab_color, left_flyers_rect)
+        pygame.draw.rect(self.screen, left_color, left_flyers_rect, 2)
 
-        tab_color = (80, 50, 50) if p2_flyers_expanded else (50, 35, 35)
-        pygame.draw.rect(self.screen, tab_color, p2_flyers_rect)
-        pygame.draw.rect(self.screen, COLOR_PLAYER2, p2_flyers_rect, 2)
+        flyer_count = sum(1 for c in left_flyers if c is not None)
+        label = self.font_small.render(f"{left_label_flyers} ({flyer_count})", True, left_color)
+        self.screen.blit(label, (left_panel_x + 5, left_panel_y + 5))
 
-        flyer_count = sum(1 for c in game.board.flying_p2 if c is not None)
-        label = self.font_small.render(f"Летающие П2 ({flyer_count})", True, COLOR_PLAYER2)
-        self.screen.blit(label, (p2_panel_x + 5, p2_y + 5))
+        # Expanded content for left flyers
+        if left_flyers_expanded:
+            content_y = left_panel_y + tab_height + spacing
+            content_rect = pygame.Rect(left_panel_x, content_y, panel_width, expanded_height)
+            pygame.draw.rect(self.screen, left_bg_dark, content_rect)
+            pygame.draw.rect(self.screen, left_color, content_rect, 1)
 
-        # Expanded content for P2 flyers
-        if p2_flyers_expanded:
-            content_y = p2_y + tab_height + spacing
-            content_rect = pygame.Rect(p2_panel_x, content_y, panel_width, expanded_height)
-            pygame.draw.rect(self.screen, (50, 35, 35), content_rect)
-            pygame.draw.rect(self.screen, COLOR_PLAYER2, content_rect, 1)
+            flyers = [c for c in left_flyers if c is not None]
+            scroll = self.side_panel_scroll.get(left_flyer_panel, 0)
+            self._draw_panel_cards(flyers, left_panel_x, content_y, panel_width, expanded_height,
+                                   card_size, card_spacing, scroll, game, left_flyer_panel)
 
-            # Get flying cards
-            flyers = [c for c in game.board.flying_p2 if c is not None]
-            scroll = self.side_panel_scroll.get('p2_flyers', 0)
-            self._draw_panel_cards(flyers, p2_panel_x, content_y, panel_width, expanded_height,
-                                   card_size, card_spacing, scroll, game, 'p2_flyers')
+        # Left graveyard tab
+        left_grave_y = left_panel_y + tab_height + spacing
+        if left_flyers_expanded:
+            left_grave_y += expanded_height + spacing
+        left_grave_expanded = self.is_panel_expanded(left_grave_panel)
+        left_grave_rect = pygame.Rect(left_panel_x, left_grave_y, panel_width, tab_height)
+        self.side_panel_tab_rects[left_grave_panel] = left_grave_rect
 
-        # P2 Graveyard tab
-        p2_grave_y = p2_y + tab_height + spacing
-        if p2_flyers_expanded:
-            p2_grave_y += expanded_height + spacing
-        p2_grave_expanded = self.is_panel_expanded('p2_grave')
-        p2_grave_rect = pygame.Rect(p2_panel_x, p2_grave_y, panel_width, tab_height)
-        self.side_panel_tab_rects['p2_grave'] = p2_grave_rect
+        tab_color = left_bg if left_grave_expanded else left_bg_dark
+        pygame.draw.rect(self.screen, tab_color, left_grave_rect)
+        pygame.draw.rect(self.screen, left_color, left_grave_rect, 2)
 
-        tab_color = (80, 50, 50) if p2_grave_expanded else (50, 35, 35)
-        pygame.draw.rect(self.screen, tab_color, p2_grave_rect)
-        pygame.draw.rect(self.screen, COLOR_PLAYER2, p2_grave_rect, 2)
+        grave_count = len(left_graveyard)
+        label = self.font_small.render(f"{left_label_grave} ({grave_count})", True, left_color)
+        self.screen.blit(label, (left_panel_x + 5, left_grave_y + 5))
 
-        grave_count = len(game.board.graveyard_p2)
-        label = self.font_small.render(f"Кладбище П2 ({grave_count})", True, COLOR_PLAYER2)
-        self.screen.blit(label, (p2_panel_x + 5, p2_grave_y + 5))
+        # Expanded content for left graveyard
+        if left_grave_expanded:
+            content_y = left_grave_y + tab_height + spacing
+            content_rect = pygame.Rect(left_panel_x, content_y, panel_width, expanded_height)
+            pygame.draw.rect(self.screen, left_bg_dark, content_rect)
+            pygame.draw.rect(self.screen, left_color, content_rect, 1)
 
-        # Expanded content for P2 graveyard
-        if p2_grave_expanded:
-            content_y = p2_grave_y + tab_height + spacing
-            content_rect = pygame.Rect(p2_panel_x, content_y, panel_width, expanded_height)
-            pygame.draw.rect(self.screen, (50, 35, 35), content_rect)
-            pygame.draw.rect(self.screen, COLOR_PLAYER2, content_rect, 1)
+            grave_cards = list(reversed(left_graveyard))
+            scroll = self.side_panel_scroll.get(left_grave_panel, 0)
+            self._draw_panel_cards(grave_cards, left_panel_x, content_y, panel_width, expanded_height,
+                                   card_size, card_spacing, scroll, game, left_grave_panel)
 
-            # Get graveyard cards (most recent first)
-            grave_cards = list(reversed(game.board.graveyard_p2))
-            scroll = self.side_panel_scroll.get('p2_grave', 0)
-            self._draw_panel_cards(grave_cards, p2_panel_x, content_y, panel_width, expanded_height,
-                                   card_size, card_spacing, scroll, game, 'p2_grave')
+        # ========== RIGHT SIDE PANEL ==========
+        # Right flyers tab
+        right_flyers_expanded = self.is_panel_expanded(right_flyer_panel)
+        right_flyers_rect = pygame.Rect(right_panel_x, right_panel_y, panel_width, tab_height)
+        self.side_panel_tab_rects[right_flyer_panel] = right_flyers_rect
 
-        # ========== P1 ZONES (RIGHT side) ==========
-        p1_panel_x = scaled(UILayout.SIDE_PANEL_P1_X)
-        p1_y = scaled(UILayout.SIDE_PANEL_P1_Y)
+        right_bg = (80, 50, 50) if right_color == COLOR_PLAYER2 else (50, 60, 80)
+        right_bg_dark = (50, 35, 35) if right_color == COLOR_PLAYER2 else (30, 40, 50)
+        tab_color = right_bg if right_flyers_expanded else right_bg_dark
+        pygame.draw.rect(self.screen, tab_color, right_flyers_rect)
+        pygame.draw.rect(self.screen, right_color, right_flyers_rect, 2)
 
-        # P1 Flyers tab
-        p1_flyers_expanded = self.is_panel_expanded('p1_flyers')
-        p1_flyers_rect = pygame.Rect(p1_panel_x, p1_y, panel_width, tab_height)
-        self.side_panel_tab_rects['p1_flyers'] = p1_flyers_rect
+        flyer_count = sum(1 for c in right_flyers if c is not None)
+        label = self.font_small.render(f"{right_label_flyers} ({flyer_count})", True, right_color)
+        self.screen.blit(label, (right_panel_x + 5, right_panel_y + 5))
 
-        tab_color = (50, 60, 80) if p1_flyers_expanded else (30, 40, 50)
-        pygame.draw.rect(self.screen, tab_color, p1_flyers_rect)
-        pygame.draw.rect(self.screen, COLOR_PLAYER1, p1_flyers_rect, 2)
+        # Expanded content for right flyers
+        if right_flyers_expanded:
+            content_y = right_panel_y + tab_height + spacing
+            content_rect = pygame.Rect(right_panel_x, content_y, panel_width, expanded_height)
+            pygame.draw.rect(self.screen, right_bg_dark, content_rect)
+            pygame.draw.rect(self.screen, right_color, content_rect, 1)
 
-        flyer_count = sum(1 for c in game.board.flying_p1 if c is not None)
-        label = self.font_small.render(f"Летающие П1 ({flyer_count})", True, COLOR_PLAYER1)
-        self.screen.blit(label, (p1_panel_x + 5, p1_y + 5))
+            flyers = [c for c in right_flyers if c is not None]
+            scroll = self.side_panel_scroll.get(right_flyer_panel, 0)
+            self._draw_panel_cards(flyers, right_panel_x, content_y, panel_width, expanded_height,
+                                   card_size, card_spacing, scroll, game, right_flyer_panel)
 
-        # Expanded content for P1 flyers
-        if p1_flyers_expanded:
-            content_y = p1_y + tab_height + spacing
-            content_rect = pygame.Rect(p1_panel_x, content_y, panel_width, expanded_height)
-            pygame.draw.rect(self.screen, (30, 40, 50), content_rect)
-            pygame.draw.rect(self.screen, COLOR_PLAYER1, content_rect, 1)
+        # Right graveyard tab
+        right_grave_y = right_panel_y + tab_height + spacing
+        if right_flyers_expanded:
+            right_grave_y += expanded_height + spacing
+        right_grave_expanded = self.is_panel_expanded(right_grave_panel)
+        right_grave_rect = pygame.Rect(right_panel_x, right_grave_y, panel_width, tab_height)
+        self.side_panel_tab_rects[right_grave_panel] = right_grave_rect
 
-            flyers = [c for c in game.board.flying_p1 if c is not None]
-            scroll = self.side_panel_scroll.get('p1_flyers', 0)
-            self._draw_panel_cards(flyers, p1_panel_x, content_y, panel_width, expanded_height,
-                                   card_size, card_spacing, scroll, game, 'p1_flyers')
+        tab_color = right_bg if right_grave_expanded else right_bg_dark
+        pygame.draw.rect(self.screen, tab_color, right_grave_rect)
+        pygame.draw.rect(self.screen, right_color, right_grave_rect, 2)
 
-        # P1 Graveyard tab
-        p1_grave_y = p1_y + tab_height + spacing
-        if p1_flyers_expanded:
-            p1_grave_y += expanded_height + spacing
-        p1_grave_expanded = self.is_panel_expanded('p1_grave')
-        p1_grave_rect = pygame.Rect(p1_panel_x, p1_grave_y, panel_width, tab_height)
-        self.side_panel_tab_rects['p1_grave'] = p1_grave_rect
+        grave_count = len(right_graveyard)
+        label = self.font_small.render(f"{right_label_grave} ({grave_count})", True, right_color)
+        self.screen.blit(label, (right_panel_x + 5, right_grave_y + 5))
 
-        tab_color = (50, 60, 80) if p1_grave_expanded else (30, 40, 50)
-        pygame.draw.rect(self.screen, tab_color, p1_grave_rect)
-        pygame.draw.rect(self.screen, COLOR_PLAYER1, p1_grave_rect, 2)
+        # Expanded content for right graveyard
+        if right_grave_expanded:
+            content_y = right_grave_y + tab_height + spacing
+            content_rect = pygame.Rect(right_panel_x, content_y, panel_width, expanded_height)
+            pygame.draw.rect(self.screen, right_bg_dark, content_rect)
+            pygame.draw.rect(self.screen, right_color, content_rect, 1)
 
-        grave_count = len(game.board.graveyard_p1)
-        label = self.font_small.render(f"Кладбище П1 ({grave_count})", True, COLOR_PLAYER1)
-        self.screen.blit(label, (p1_panel_x + 5, p1_grave_y + 5))
-
-        # Expanded content for P1 graveyard
-        if p1_grave_expanded:
-            content_y = p1_grave_y + tab_height + spacing
-            content_rect = pygame.Rect(p1_panel_x, content_y, panel_width, expanded_height)
-            pygame.draw.rect(self.screen, (30, 40, 50), content_rect)
-            pygame.draw.rect(self.screen, COLOR_PLAYER1, content_rect, 1)
-
-            grave_cards = list(reversed(game.board.graveyard_p1))
-            scroll = self.side_panel_scroll.get('p1_grave', 0)
-            self._draw_panel_cards(grave_cards, p1_panel_x, content_y, panel_width, expanded_height,
-                                   card_size, card_spacing, scroll, game, 'p1_grave')
+            grave_cards = list(reversed(right_graveyard))
+            scroll = self.side_panel_scroll.get(right_grave_panel, 0)
+            self._draw_panel_cards(grave_cards, right_panel_x, content_y, panel_width, expanded_height,
+                                   card_size, card_spacing, scroll, game, right_grave_panel)
 
     def _draw_panel_cards(self, cards: List[Card], panel_x: int, content_y: int,
                           panel_width: int, panel_height: int, card_size: int,
@@ -2407,24 +2494,27 @@ class Renderer:
         highlighted_card_ids = set()  # For defender highlighting (uses card IDs)
         highlight_type = None  # 'attack', 'move', 'ability', 'defender', etc.
         if is_flyers and game:
-            # Check various highlight modes
-            if game.awaiting_defender and game.interaction:
+            # Only show interaction highlights to the acting player
+            is_acting = (game.interaction and game.interaction.acting_player == self.viewing_player)
+
+            # Check various highlight modes (only for acting player)
+            if game.awaiting_defender and game.interaction and is_acting:
                 highlighted_card_ids = set(game.interaction.valid_card_ids)
                 highlight_type = 'defender'
-            elif game.awaiting_counter_shot and game.interaction:
+            elif game.awaiting_counter_shot and game.interaction and is_acting:
                 highlighted_positions = set(game.interaction.valid_positions)
                 highlight_type = 'counter_shot'
-            elif game.awaiting_movement_shot and game.interaction:
+            elif game.awaiting_movement_shot and game.interaction and is_acting:
                 highlighted_positions = set(game.interaction.valid_positions)
                 highlight_type = 'counter_shot'
-            elif game.awaiting_ability_target and game.interaction:
+            elif game.awaiting_ability_target and game.interaction and is_acting:
                 highlighted_positions = set(game.interaction.valid_positions)
                 highlight_type = 'ability'
-            elif game.awaiting_valhalla and game.interaction:
+            elif game.awaiting_valhalla and game.interaction and is_acting:
                 highlighted_positions = set(game.interaction.valid_positions)
                 highlight_type = 'valhalla'
-            else:
-                # Normal mode - check valid_attacks
+            elif game.current_player == self.viewing_player:
+                # Normal mode - check valid_attacks (only for current player's turn)
                 highlighted_positions = set(self._ui.valid_attacks)
                 highlight_type = 'attack'
 
@@ -2530,10 +2620,14 @@ class Renderer:
         card_spacing = scaled(UILayout.SIDE_PANEL_CARD_SPACING)
         panel_width = scaled(UILayout.SIDE_PANEL_WIDTH)
 
-        # Check P1 flyers
+        # Check P1 flyers - for player 2's view, P1's flyers are on left (P2's panel position)
         if self.is_panel_expanded('p1_flyers'):
-            panel_x = scaled(UILayout.SIDE_PANEL_P1_X)
-            base_y = scaled(UILayout.SIDE_PANEL_P1_Y) + tab_height + spacing
+            if self.viewing_player == 2:
+                panel_x = scaled(UILayout.SIDE_PANEL_P2_X)
+                base_y = scaled(UILayout.SIDE_PANEL_P2_Y) + tab_height + spacing
+            else:
+                panel_x = scaled(UILayout.SIDE_PANEL_P1_X)
+                base_y = scaled(UILayout.SIDE_PANEL_P1_Y) + tab_height + spacing
             scroll = self.side_panel_scroll.get('p1_flyers', 0)
             card_x = panel_x + (panel_width - card_size) // 2
             content_y = base_y + 5
@@ -2543,10 +2637,14 @@ class Renderer:
                 if slot_rect.collidepoint(mouse_x, mouse_y):
                     return Board.FLYING_P1_START + i
 
-        # Check P2 flyers
+        # Check P2 flyers - for player 2's view, P2's flyers are on right (P1's panel position)
         if self.is_panel_expanded('p2_flyers'):
-            panel_x = scaled(UILayout.SIDE_PANEL_P2_X)
-            base_y = scaled(UILayout.SIDE_PANEL_P2_Y) + tab_height + spacing
+            if self.viewing_player == 2:
+                panel_x = scaled(UILayout.SIDE_PANEL_P1_X)
+                base_y = scaled(UILayout.SIDE_PANEL_P1_Y) + tab_height + spacing
+            else:
+                panel_x = scaled(UILayout.SIDE_PANEL_P2_X)
+                base_y = scaled(UILayout.SIDE_PANEL_P2_Y) + tab_height + spacing
             scroll = self.side_panel_scroll.get('p2_flyers', 0)
             card_x = panel_x + (panel_width - card_size) // 2
             content_y = base_y + 5
@@ -2558,13 +2656,16 @@ class Renderer:
 
         return None
 
-    def draw(self, game: Game, dt: float = 0.016, ui_state: 'UIState' = None):
+    def draw(self, game: Game, dt: float = 0.016, ui_state: 'UIState' = None, skip_flip: bool = False, test_controlled_player: any = "not_test_game"):
         """Main draw function.
 
         Args:
             game: Game state to render
             dt: Delta time for animations
             ui_state: UIState for client-side selection/highlighting (required).
+            skip_flip: If True, skip pygame.display.flip() - caller will handle it.
+            test_controlled_player: For test game mode - pass None (auto) or 1/2 (manual control).
+                                   Pass "not_test_game" (default) to hide the indicator.
         """
         import math
 
@@ -2574,12 +2675,15 @@ class Renderer:
             self._ui.valid_moves = list(ui_state.valid_moves)
             self._ui.valid_attacks = list(ui_state.valid_attacks)
             self._ui.attack_mode = ui_state.attack_mode
+            # Set viewing_player for board perspective (P2 sees board flipped)
+            self.viewing_player = ui_state.viewing_player
         else:
             # No ui_state provided - clear all selection state
             self._ui.selected_card = None
             self._ui.valid_moves = []
             self._ui.valid_attacks = []
             self._ui.attack_mode = False
+            self.viewing_player = 1
 
         # Update priority glow animation timer (also used for forced attack and defender highlight)
         if game.awaiting_priority or game.has_forced_attack or game.awaiting_defender:
@@ -2592,6 +2696,9 @@ class Renderer:
         # Clear render surface
         self.screen.fill(COLOR_BG)
 
+        # Update card movement animations BEFORE drawing cards
+        self.update_card_animations(game, dt)
+
         # Draw everything to render surface
         self.draw_board(game)
         self.draw_side_panels(game)
@@ -2600,10 +2707,16 @@ class Renderer:
         self.draw_ui(game)
         self.draw_hand(game)
 
-        # Draw priority phase UI (info box, pass button, dice popup)
+        # Draw side control indicator for test game mode
+        if test_controlled_player != "not_test_game":
+            self.draw_side_control_indicator(test_controlled_player)
+
+        # Draw priority phase UI (info box, pass button, dice popup) or turn indicator
         if game.awaiting_priority:
             self.draw_priority_info(game)
-            self.draw_pass_button(game)
+            # Only show pass button to priority player
+            if game.priority_player == self.viewing_player:
+                self.draw_pass_button(game)
             # Draw dice popup if open
             if self.dice_popup_open:
                 self.draw_dice_popup(game)
@@ -2611,10 +2724,13 @@ class Renderer:
             # Close dice popup if priority ended
             if self.dice_popup_open:
                 self.close_dice_popup()
+            # Show turn indicator when not in priority phase
+            self.draw_turn_indicator(game)
 
-        # Draw counter selection popup
+        # Draw counter selection popup (only for acting player)
         if game.awaiting_counter_selection:
-            self.draw_counter_popup(game)
+            if game.interaction and game.interaction.acting_player == self.viewing_player:
+                self.draw_counter_popup(game)
 
         # Update and draw floating texts
         self.update_floating_texts(dt)
@@ -2640,7 +2756,8 @@ class Renderer:
         else:
             self.window.blit(self.screen, (self.offset_x, self.offset_y))
 
-        pygame.display.flip()
+        if not skip_flip:
+            pygame.display.flip()
 
 
     def open_dice_popup(self, card: Card):
@@ -2973,6 +3090,70 @@ class Renderer:
         text_y = button_rect.y + (button_rect.height - button_surface.get_height()) // 2
         self.screen.blit(button_surface, (text_x, text_y))
 
+    def draw_turn_indicator(self, game: Game):
+        """Draw turn indicator showing whose turn it is from viewing player's perspective."""
+        # Don't show during priority phase (priority info is shown instead)
+        if game.awaiting_priority:
+            return
+
+        # Draw turn indicator box (same position as priority bar)
+        info_x = WINDOW_WIDTH - scaled(UILayout.PRIORITY_BAR_X_OFFSET)
+        info_y = scaled(UILayout.PRIORITY_BAR_Y)
+        info_width = scaled(UILayout.PRIORITY_BAR_WIDTH)
+        info_height = scaled(UILayout.PRIORITY_BAR_HEIGHT)
+
+        is_my_turn = game.current_player == self.viewing_player
+
+        # Background color based on whose turn
+        if is_my_turn:
+            bg_color = (40, 60, 40)  # Green tint for your turn
+            border_color = (80, 140, 80)
+            text = "Ваш ход"
+        else:
+            bg_color = (60, 40, 40)  # Red tint for opponent's turn
+            border_color = (140, 80, 80)
+            text = "Ход противника"
+
+        pygame.draw.rect(self.screen, bg_color, (info_x, info_y, info_width, info_height))
+        pygame.draw.rect(self.screen, border_color, (info_x, info_y, info_width, info_height), 2)
+
+        # Text
+        text_surface = self.font_medium.render(text, True, COLOR_TEXT)
+        text_x = info_x + (info_width - text_surface.get_width()) // 2
+        self.screen.blit(text_surface, (text_x, info_y + 4))
+
+    def draw_side_control_indicator(self, controlled_player: Optional[int]):
+        """Draw indicator showing which side is being controlled (test game mode).
+
+        Args:
+            controlled_player: None for auto, 1 or 2 for manual control
+        """
+        # Draw at top-left corner
+        x = scaled(10)
+        y = scaled(10)
+
+        if controlled_player is None:
+            text = "TAB: Авто (ход)"
+            bg_color = (40, 40, 40)
+            border_color = (80, 80, 80)
+        elif controlled_player == 1:
+            text = "TAB: Игрок 1"
+            bg_color = (35, 65, 90)  # Dark blue
+            border_color = COLOR_PLAYER1
+        else:
+            text = "TAB: Игрок 2"
+            bg_color = (90, 35, 35)  # Dark red
+            border_color = COLOR_PLAYER2
+
+        text_surface = self.font_small.render(text, True, COLOR_TEXT)
+        padding = scaled(6)
+        width = text_surface.get_width() + padding * 2
+        height = text_surface.get_height() + padding * 2
+
+        pygame.draw.rect(self.screen, bg_color, (x, y, width, height))
+        pygame.draw.rect(self.screen, border_color, (x, y, width, height), 2)
+        self.screen.blit(text_surface, (x + padding, y + padding))
+
     def draw_priority_info(self, game: Game):
         """Draw priority phase info under buttons."""
         if not game.awaiting_priority:
@@ -2988,9 +3169,14 @@ class Renderer:
         pygame.draw.rect(self.screen, (50, 40, 70), (info_x, info_y, info_width, info_height))
         pygame.draw.rect(self.screen, (100, 80, 140), (info_x, info_y, info_width, info_height), 2)
 
-        # Priority player text only
-        priority_color = COLOR_PLAYER1 if game.priority_player == 1 else COLOR_PLAYER2
-        priority_text = f"Приоритет: Игрок {game.priority_player}"
+        # Priority player text - show from viewing player's perspective
+        is_my_priority = game.priority_player == self.viewing_player
+        if is_my_priority:
+            priority_text = "Ваш приоритет"
+            priority_color = (100, 200, 100)  # Green
+        else:
+            priority_text = "Приоритет противника"
+            priority_color = (200, 100, 100)  # Red
         text_surface = self.font_medium.render(priority_text, True, priority_color)
         text_x = info_x + (info_width - text_surface.get_width()) // 2
         self.screen.blit(text_surface, (text_x, info_y + 4))
@@ -3156,6 +3342,54 @@ class Renderer:
             'max_life': 1.0
         })
 
+    def update_card_animations(self, game: 'Game', dt: float):
+        """Update card movement animations and detect new movements."""
+        # Update existing animations
+        finished = []
+        for card_id, anim in self.card_animations.items():
+            anim['progress'] += dt / self.CARD_MOVE_DURATION
+            if anim['progress'] >= 1.0:
+                finished.append(card_id)
+        for card_id in finished:
+            del self.card_animations[card_id]
+
+        # Detect new card movements by comparing positions
+        current_positions = {}
+        for pos in range(36):  # All board positions including flying
+            card = game.board.get_card(pos)
+            if card:
+                current_positions[card.id] = pos
+
+        # Check for position changes
+        for card_id, new_pos in current_positions.items():
+            old_pos = self.card_last_positions.get(card_id)
+            if old_pos is not None and old_pos != new_pos:
+                # Card moved - start animation
+                from_x, from_y = self.pos_to_screen(old_pos)
+                to_x, to_y = self.pos_to_screen(new_pos)
+                self.card_animations[card_id] = {
+                    'from_x': from_x,
+                    'from_y': from_y,
+                    'to_x': to_x,
+                    'to_y': to_y,
+                    'progress': 0.0
+                }
+
+        # Update last known positions
+        self.card_last_positions = current_positions
+
+    def get_card_draw_position(self, card_id: int, base_x: int, base_y: int) -> Tuple[int, int]:
+        """Get the position to draw a card, accounting for movement animation."""
+        if card_id in self.card_animations:
+            anim = self.card_animations[card_id]
+            # Smooth easing function (ease-out)
+            t = anim['progress']
+            t = 1 - (1 - t) ** 2  # Quadratic ease-out
+            x = int(anim['from_x'] + (anim['to_x'] - anim['from_x']) * t)
+            y = int(anim['from_y'] + (anim['to_y'] - anim['from_y']) * t)
+            return x, y
+        return base_x, base_y
+
     def update_floating_texts(self, dt: float):
         """Update floating text positions and lifetimes."""
         for ft in self.floating_texts:
@@ -3306,10 +3540,18 @@ class Renderer:
         # Draw card image (no border for cleaner look)
         self.screen.blit(img, (img_x, img_y))
 
-    def show_game_over_popup(self, winner: int):
-        """Show game over popup with winner info."""
+    def show_game_over_popup(self, winner: int, player1_name: str = None, player2_name: str = None):
+        """Show game over popup with winner info.
+
+        Args:
+            winner: 1 or 2 for winner, 0 for draw
+            player1_name: Name of player 1 (optional)
+            player2_name: Name of player 2 (optional)
+        """
         self.game_over_popup = True
         self.game_over_winner = winner
+        self.game_over_player1_name = player1_name
+        self.game_over_player2_name = player2_name
 
     def hide_game_over_popup(self):
         """Hide game over popup."""
@@ -3340,23 +3582,40 @@ class Renderer:
         if self.game_over_winner == 0:
             title_text = "Ничья!"
             title_color = (200, 200, 200)
+            winner_name = None
         else:
-            title_text = f"Победа игрока {self.game_over_winner}!"
             if self.game_over_winner == 1:
                 title_color = COLOR_PLAYER1
+                winner_name = getattr(self, 'game_over_player1_name', None)
             else:
                 title_color = COLOR_PLAYER2
+                winner_name = getattr(self, 'game_over_player2_name', None)
+
+            if winner_name:
+                title_text = f"Победил игрок {self.game_over_winner}!"
+            else:
+                title_text = f"Победа игрока {self.game_over_winner}!"
 
         title_surface = self.font_large.render(title_text, True, title_color)
         title_x = popup_x + (popup_w - title_surface.get_width()) // 2
-        title_y = popup_y + scaled(40)
+        title_y = popup_y + scaled(35)
         self.screen.blit(title_surface, (title_x, title_y))
+
+        # Winner name (if available)
+        if self.game_over_winner != 0 and winner_name:
+            name_text = winner_name
+            name_surface = self.font_medium.render(name_text, True, title_color)
+            name_x = popup_x + (popup_w - name_surface.get_width()) // 2
+            name_y = popup_y + scaled(75)
+            self.screen.blit(name_surface, (name_x, name_y))
+            congrats_y = popup_y + scaled(110)
+        else:
+            congrats_y = popup_y + scaled(80)
 
         # Congratulations text
         congrats_text = "Поздравляем!"
         congrats_surface = self.font_medium.render(congrats_text, True, COLOR_TEXT)
         congrats_x = popup_x + (popup_w - congrats_surface.get_width()) // 2
-        congrats_y = popup_y + scaled(80)
         self.screen.blit(congrats_surface, (congrats_x, congrats_y))
 
         # OK button
@@ -3417,6 +3676,7 @@ class Renderer:
             ("network_game", "Игра по сети", True),
             ("bot_game", "Игра с ботом", False),
             ("deck_builder", "Создание колоды", True),
+            ("settings", "Настройки", True),
             ("exit", "Выход", True),
         ]
 
@@ -3473,6 +3733,240 @@ class Renderer:
     def get_clicked_menu_button(self, mouse_x: int, mouse_y: int) -> Optional[str]:
         """Check if a menu button was clicked. Returns button_id or None."""
         for btn_id, rect in self.menu_buttons:
+            if rect.collidepoint(mouse_x, mouse_y):
+                return btn_id
+        return None
+
+    def draw_settings(self, current_resolution: tuple):
+        """Draw the settings screen."""
+        from .constants import RESOLUTIONS
+
+        self.settings_buttons = []
+
+        # Clear screen with background
+        self.screen.fill(COLOR_BG)
+
+        # Title
+        title_font = pygame.font.SysFont('arial', scaled(36))
+        title = title_font.render("НАСТРОЙКИ", True, (200, 180, 100))
+        title_x = (WINDOW_WIDTH - title.get_width()) // 2
+        self.screen.blit(title, (title_x, scaled(60)))
+
+        # Resolution section
+        section_title = self.font_medium.render("Разрешение экрана:", True, COLOR_TEXT)
+        self.screen.blit(section_title, (scaled(100), scaled(140)))
+
+        # Resolution buttons
+        btn_width = scaled(200)
+        btn_height = scaled(40)
+        btn_spacing = scaled(10)
+        start_x = scaled(100)
+        start_y = scaled(190)
+
+        for i, (w, h) in enumerate(RESOLUTIONS):
+            col = i % 3
+            row = i // 3
+            btn_x = start_x + col * (btn_width + btn_spacing)
+            btn_y = start_y + row * (btn_height + btn_spacing)
+            btn_rect = pygame.Rect(btn_x, btn_y, btn_width, btn_height)
+
+            # Highlight current resolution
+            is_current = (w, h) == current_resolution
+            if is_current:
+                bg_color = (80, 100, 60)
+                border_color = (150, 180, 100)
+            else:
+                bg_color = (60, 50, 70)
+                border_color = (120, 100, 140)
+
+            pygame.draw.rect(self.screen, bg_color, btn_rect)
+            pygame.draw.rect(self.screen, border_color, btn_rect, 2)
+
+            # Resolution text
+            res_text = f"{w} x {h}"
+            text_surface = self.font_medium.render(res_text, True, COLOR_TEXT)
+            text_x = btn_rect.x + (btn_width - text_surface.get_width()) // 2
+            text_y = btn_rect.y + (btn_height - text_surface.get_height()) // 2
+            self.screen.blit(text_surface, (text_x, text_y))
+
+            self.settings_buttons.append((f"res_{w}_{h}", btn_rect))
+
+        # Fullscreen toggle info
+        fullscreen_text = self.font_small.render("F11 - переключить полноэкранный режим", True, (150, 150, 160))
+        self.screen.blit(fullscreen_text, (scaled(100), scaled(340)))
+
+        # Back button
+        back_btn_width = scaled(180)
+        back_btn_height = scaled(45)
+        back_btn_x = (WINDOW_WIDTH - back_btn_width) // 2
+        back_btn_y = WINDOW_HEIGHT - scaled(100)
+        back_btn_rect = pygame.Rect(back_btn_x, back_btn_y, back_btn_width, back_btn_height)
+
+        pygame.draw.rect(self.screen, (60, 50, 70), back_btn_rect)
+        pygame.draw.rect(self.screen, (120, 100, 140), back_btn_rect, 2)
+
+        back_text = self.font_medium.render("Назад", True, COLOR_TEXT)
+        text_x = back_btn_rect.x + (back_btn_width - back_text.get_width()) // 2
+        text_y = back_btn_rect.y + (back_btn_height - back_text.get_height()) // 2
+        self.screen.blit(back_text, (text_x, text_y))
+
+        self.settings_buttons.append(("back", back_btn_rect))
+
+        # Scale and blit to window
+        self.window.fill((0, 0, 0))
+        if self.scale != 1.0:
+            scaled_w = int(self.BASE_WIDTH * self.scale)
+            scaled_h = int(self.BASE_HEIGHT * self.scale)
+            scaled_surface = pygame.transform.smoothscale(self.screen, (scaled_w, scaled_h))
+            self.window.blit(scaled_surface, (self.offset_x, self.offset_y))
+        else:
+            self.window.blit(self.screen, (self.offset_x, self.offset_y))
+
+        pygame.display.flip()
+
+    def get_clicked_settings_button(self, mouse_x: int, mouse_y: int) -> Optional[str]:
+        """Check if a settings button was clicked. Returns button_id or None."""
+        if not hasattr(self, 'settings_buttons'):
+            return None
+        for btn_id, rect in self.settings_buttons:
+            if rect.collidepoint(mouse_x, mouse_y):
+                return btn_id
+        return None
+
+    def draw_pause_menu(self, current_resolution: tuple, is_network_game: bool = False):
+        """Draw in-game pause menu overlay."""
+        from .constants import RESOLUTIONS
+
+        self.pause_buttons = []
+
+        # Semi-transparent overlay
+        overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 180))
+        self.screen.blit(overlay, (0, 0))
+
+        # Menu panel
+        panel_width = scaled(400)
+        panel_height = scaled(400)
+        panel_x = (WINDOW_WIDTH - panel_width) // 2
+        panel_y = (WINDOW_HEIGHT - panel_height) // 2
+        panel_rect = pygame.Rect(panel_x, panel_y, panel_width, panel_height)
+
+        pygame.draw.rect(self.screen, (40, 35, 50), panel_rect)
+        pygame.draw.rect(self.screen, (100, 80, 120), panel_rect, 3)
+
+        # Title
+        title_font = pygame.font.SysFont('arial', scaled(28))
+        title = title_font.render("ПАУЗА", True, (200, 180, 100))
+        title_x = panel_x + (panel_width - title.get_width()) // 2
+        self.screen.blit(title, (title_x, panel_y + scaled(20)))
+
+        # Resolution section
+        section_y = panel_y + scaled(65)
+        section_title = self.font_small.render("Разрешение:", True, COLOR_TEXT)
+        self.screen.blit(section_title, (panel_x + scaled(20), section_y))
+
+        # Resolution buttons (2 per row)
+        btn_width = scaled(110)
+        btn_height = scaled(32)
+        btn_spacing = scaled(8)
+        start_x = panel_x + scaled(20)
+        start_y = section_y + scaled(25)
+
+        for i, (w, h) in enumerate(RESOLUTIONS):
+            col = i % 3
+            row = i // 3
+            btn_x = start_x + col * (btn_width + btn_spacing)
+            btn_y = start_y + row * (btn_height + btn_spacing)
+            btn_rect = pygame.Rect(btn_x, btn_y, btn_width, btn_height)
+
+            is_current = (w, h) == current_resolution
+            if is_current:
+                bg_color = (80, 100, 60)
+                border_color = (150, 180, 100)
+            else:
+                bg_color = (60, 50, 70)
+                border_color = (100, 80, 120)
+
+            pygame.draw.rect(self.screen, bg_color, btn_rect)
+            pygame.draw.rect(self.screen, border_color, btn_rect, 2)
+
+            res_text = f"{w}x{h}"
+            text_surface = self.font_small.render(res_text, True, COLOR_TEXT)
+            text_x = btn_rect.x + (btn_width - text_surface.get_width()) // 2
+            text_y = btn_rect.y + (btn_height - text_surface.get_height()) // 2
+            self.screen.blit(text_surface, (text_x, text_y))
+
+            self.pause_buttons.append((f"res_{w}_{h}", btn_rect))
+
+        # Action buttons
+        action_btn_width = scaled(180)
+        action_btn_height = scaled(40)
+        action_y = panel_y + panel_height - scaled(160)
+
+        # Concede button (only in network games)
+        if is_network_game:
+            concede_rect = pygame.Rect(
+                panel_x + (panel_width - action_btn_width) // 2,
+                action_y,
+                action_btn_width,
+                action_btn_height
+            )
+            pygame.draw.rect(self.screen, (120, 50, 50), concede_rect)
+            pygame.draw.rect(self.screen, (180, 80, 80), concede_rect, 2)
+
+            concede_text = self.font_medium.render("Сдаться", True, COLOR_TEXT)
+            text_x = concede_rect.x + (action_btn_width - concede_text.get_width()) // 2
+            text_y = concede_rect.y + (action_btn_height - concede_text.get_height()) // 2
+            self.screen.blit(concede_text, (text_x, text_y))
+
+            self.pause_buttons.append(("concede", concede_rect))
+            action_y += action_btn_height + scaled(10)
+        else:
+            # Exit to menu button (for local games)
+            exit_rect = pygame.Rect(
+                panel_x + (panel_width - action_btn_width) // 2,
+                action_y,
+                action_btn_width,
+                action_btn_height
+            )
+            pygame.draw.rect(self.screen, (120, 50, 50), exit_rect)
+            pygame.draw.rect(self.screen, (180, 80, 80), exit_rect, 2)
+
+            exit_text = self.font_medium.render("Выход в меню", True, COLOR_TEXT)
+            text_x = exit_rect.x + (action_btn_width - exit_text.get_width()) // 2
+            text_y = exit_rect.y + (action_btn_height - exit_text.get_height()) // 2
+            self.screen.blit(exit_text, (text_x, text_y))
+
+            self.pause_buttons.append(("exit", exit_rect))
+            action_y += action_btn_height + scaled(10)
+
+        # Resume button
+        resume_rect = pygame.Rect(
+            panel_x + (panel_width - action_btn_width) // 2,
+            action_y,
+            action_btn_width,
+            action_btn_height
+        )
+        pygame.draw.rect(self.screen, (60, 80, 60), resume_rect)
+        pygame.draw.rect(self.screen, (100, 150, 100), resume_rect, 2)
+
+        resume_text = self.font_medium.render("Продолжить", True, COLOR_TEXT)
+        text_x = resume_rect.x + (action_btn_width - resume_text.get_width()) // 2
+        text_y = resume_rect.y + (action_btn_height - resume_text.get_height()) // 2
+        self.screen.blit(resume_text, (text_x, text_y))
+
+        self.pause_buttons.append(("resume", resume_rect))
+
+        # ESC hint at bottom
+        hint_text = self.font_small.render("ESC - продолжить игру", True, (120, 120, 130))
+        hint_x = panel_x + (panel_width - hint_text.get_width()) // 2
+        self.screen.blit(hint_text, (hint_x, panel_y + panel_height - scaled(30)))
+
+    def get_clicked_pause_button(self, mouse_x: int, mouse_y: int) -> Optional[str]:
+        """Check if a pause menu button was clicked. Returns button_id or None."""
+        if not hasattr(self, 'pause_buttons'):
+            return None
+        for btn_id, rect in self.pause_buttons:
             if rect.collidepoint(mouse_x, mouse_y):
                 return btn_id
         return None

@@ -49,6 +49,7 @@ class CommandType(Enum):
     PASS_PRIORITY = auto()
     SKIP = auto()  # Skip optional action (defender, movement shot)
     END_TURN = auto()
+    CONCEDE = auto()  # Player concedes the game
 
 
 @dataclass(frozen=True)
@@ -161,6 +162,9 @@ def cmd_skip(player: int) -> Command:
 
 def cmd_end_turn(player: int) -> Command:
     return Command(CommandType.END_TURN, player)
+
+def cmd_concede(player: int) -> Command:
+    return Command(CommandType.CONCEDE, player)
 
 
 # =============================================================================
