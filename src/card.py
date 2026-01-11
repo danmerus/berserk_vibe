@@ -37,6 +37,23 @@ class CardStats:
     max_counters: int = 0  # Max counters (0 = no counters)
     armor: int = 0  # Armor X: blocks first X non-magical damage per turn
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize card stats for hashing/comparison.
+
+        Auto-generates from dataclass fields, handling Enums and sorting lists.
+        """
+        from dataclasses import fields
+        from enum import Enum
+        result = {}
+        for f in fields(self):
+            value = getattr(self, f.name)
+            if isinstance(value, Enum):
+                value = value.name
+            elif isinstance(value, list):
+                value = sorted(value)
+            result[f.name] = value
+        return result
+
 
 @dataclass
 class Card:
@@ -92,6 +109,12 @@ class Card:
     armor_remaining: int = field(default=0)
     formation_armor_remaining: int = field(default=0)  # Formation armor remaining
     formation_armor_max: int = field(default=0)  # Max formation armor (for tracking changes)
+
+    # Anti-flyer preparation: ground card tapped to attack flyers
+    # When opponent has only flyers, ground cards can tap to attack one flyer
+    # Expires at end of owner's next turn, consumed after one attack
+    can_attack_flyer: bool = field(default=False)
+    can_attack_flyer_until_turn: int = field(default=0)  # Owner's turn number when it expires
 
     @property
     def stats(self) -> CardStats:

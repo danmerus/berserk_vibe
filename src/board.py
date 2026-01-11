@@ -204,6 +204,10 @@ class Board:
         if self.is_flying_pos(card.position):
             return self._get_flying_attack_targets(card, include_allies)
 
+        # Handle restricted_strike (can only attack card directly in front)
+        if card.has_ability("restricted_strike"):
+            return self._get_restricted_strike_targets(card)
+
         targets = []
         for adj in self.get_adjacent_cells(card.position, include_diagonals=True):
             target_card = self.cells[adj]
@@ -214,6 +218,32 @@ class Board:
                     targets.append(adj)
 
         return targets
+
+    def _get_restricted_strike_targets(self, card: Card) -> List[int]:
+        """Get targets for restricted_strike (only card directly in front, same column)."""
+        col, row = self.pos_to_coords(card.position)
+
+        # Determine forward direction based on player
+        if card.player == 1:
+            # Player 1: forward is toward higher rows
+            front_row = row + 1
+        else:
+            # Player 2: forward is toward lower rows
+            front_row = row - 1
+
+        # Check bounds
+        if front_row < 0 or front_row >= BOARD_ROWS:
+            return []
+
+        # Get position directly in front
+        front_pos = self.coords_to_pos(col, front_row)
+        target_card = self.cells[front_pos]
+
+        # Can only attack if there's an enemy card there
+        if target_card and target_card.is_alive and target_card.player != card.player:
+            return [front_pos]
+
+        return []
 
     def _get_flying_attack_targets(self, card: Card, include_allies: bool = True) -> List[int]:
         """Get attack targets for a flying creature (can attack anyone)."""
@@ -391,3 +421,37 @@ class Board:
         elif not alive_p2:
             return 1
         return None
+
+    def to_dict(self) -> dict:
+        """Serialize board state to dictionary for network/storage."""
+        return {
+            'cells': [card.to_dict() if card else None for card in self.cells],
+            'flying_p1': [card.to_dict() if card else None for card in self.flying_p1],
+            'flying_p2': [card.to_dict() if card else None for card in self.flying_p2],
+            'graveyard_p1': [card.to_dict() for card in self.graveyard_p1],
+            'graveyard_p2': [card.to_dict() for card in self.graveyard_p2],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'Board':
+        """Deserialize board state from dictionary."""
+        board = cls()
+        board.cells = [
+            Card.from_dict(card_data) if card_data else None
+            for card_data in data.get('cells', [None] * 30)
+        ]
+        board.flying_p1 = [
+            Card.from_dict(card_data) if card_data else None
+            for card_data in data.get('flying_p1', [None] * cls.FLYING_SLOTS)
+        ]
+        board.flying_p2 = [
+            Card.from_dict(card_data) if card_data else None
+            for card_data in data.get('flying_p2', [None] * cls.FLYING_SLOTS)
+        ]
+        board.graveyard_p1 = [
+            Card.from_dict(card_data) for card_data in data.get('graveyard_p1', [])
+        ]
+        board.graveyard_p2 = [
+            Card.from_dict(card_data) for card_data in data.get('graveyard_p2', [])
+        ]
+        return board

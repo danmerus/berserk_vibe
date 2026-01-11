@@ -29,3 +29,6 @@ nul
 
 # Data folder (card images - too large for git)
 data/
+
+# Tools (bore binary - auto-downloaded on first use)
+tools/

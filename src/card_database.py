@@ -123,7 +123,7 @@ CARD_DATABASE = {
         attack=(1, 2, 3),
         move=2,
         description="",
-        ability_ids=["lunge_2", "valhalla_ova"]
+        ability_ids=["lunge_2", "lunge_front_buff", "valhalla_ova"]
     ),
     "Горный великан": CardStats(
         name="Горный великан",
@@ -412,3 +412,18 @@ def create_starter_deck_p2() -> List[str]:
         "Паук-пересмешник",
         "Дракс",
     ]
+
+
+def get_card_database_hash() -> str:
+    """Get a hash of the card database for version verification.
+
+    Used in network handshake to ensure client and server have matching card definitions.
+    """
+    import hashlib
+    import json
+
+    # Build a deterministic representation of all cards using to_dict()
+    cards_data = {name: stats.to_dict() for name, stats in sorted(CARD_DATABASE.items())}
+
+    data_str = json.dumps(cards_data, sort_keys=True, ensure_ascii=False)
+    return hashlib.md5(data_str.encode('utf-8')).hexdigest()[:16]

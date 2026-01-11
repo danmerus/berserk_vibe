@@ -71,8 +71,11 @@ class Ability:
     heal_amount: int = 0
     damage_amount: int = 0
     ranged_damage: Optional[Tuple[int, int, int]] = None  # Custom damage for ranged (weak, med, strong)
+    magic_damage: Optional[Tuple[int, int, int]] = None  # Custom damage for magic (weak, med, strong)
+    magic_counter_bonus: int = 0  # Extra magic damage per counter spent (for counter-based abilities)
     ranged_type: str = "shot"  # "shot" (Выстрел) or "throw" (Метание)
     grants_direct: bool = False  # Ranged ignores defenders
+    can_target_flying: bool = False  # True for ranged attacks that can hit flying creatures
 
     # Dice and damage bonuses
     dice_bonus_attack: int = 0   # ОвА - added to attack dice roll
@@ -126,6 +129,22 @@ class Ability:
     requires_damaged: bool = False       # Card must be damaged (curr_life < life)
     requires_formation: bool = False     # Card must be in formation (for triggered abilities)
 
+    def to_dict(self) -> dict:
+        """Serialize ability for hashing/comparison.
+
+        Auto-generates from dataclass fields, handling Enums and sorting lists.
+        """
+        from dataclasses import fields
+        result = {}
+        for f in fields(self):
+            value = getattr(self, f.name)
+            if isinstance(value, Enum):
+                value = value.name
+            elif isinstance(value, list):
+                value = sorted(value)
+            result[f.name] = value
+        return result
+
 
 # =============================================================================
 # PREDEFINED ABILITIES
@@ -173,6 +192,7 @@ ABILITY_MOVEMENT_SHOT = Ability(
     damage_amount=1,
     range=3,
     status_text="выстрел при движении",
+    can_target_flying=True,  # Ranged shot
 )
 
 # Бегущая по кронам specific ranged shot (1-2-2 damage)
@@ -185,6 +205,7 @@ ABILITY_CROWN_RUNNER_SHOT = Ability(
     range=99,
     min_range=2,
     ranged_damage=(1, 2, 2),
+    can_target_flying=True,  # Ranged shot
 )
 
 # Удар через ряд (Lunge) - attack through one cell vertically/horizontally
@@ -212,6 +233,17 @@ ABILITY_LUNGE_2 = Ability(
     range=2,
     min_range=2,
     damage_amount=2,  # Fixed 2 damage
+)
+
+# Lunge front buff - gives +1 dice to ally in front after lunge attack
+ABILITY_LUNGE_FRONT_BUFF = Ability(
+    id="lunge_front_buff",
+    name="Поддержка",
+    description="После удара через ряд: союзник впереди получает ОвА",
+    ability_type=AbilityType.PASSIVE,
+    target_type=TargetType.NONE,
+    dice_bonus_attack=1,  # The bonus amount to give
+    status_text="Удар через ряд: ОвА союзнику",
 )
 
 # Опыт в атаке - +1 to attack dice roll (passive)
@@ -308,8 +340,9 @@ ABILITY_RESTRICTED_STRIKE = Ability(
     status_text="только напротив",
 )
 
-# Magical strike - tap to deal 2 magical damage (ignores reductions)
+# Magical strike - tap to deal magic damage with dice roll (ignores reductions)
 # Can target ANY adjacent creature (allies or enemies)
+# Fixed 2 damage, but uses dice roll that can be modified by luck
 ABILITY_MAGICAL_STRIKE = Ability(
     id="magical_strike",
     name="Магический удар",
@@ -317,7 +350,7 @@ ABILITY_MAGICAL_STRIKE = Ability(
     ability_type=AbilityType.ACTIVE,
     target_type=TargetType.ANY,
     range=1,
-    damage_amount=2,
+    magic_damage=(2, 2, 2),
 )
 
 # Center column bonus - +1 defense, -1 incoming weak damage when in center column
@@ -372,6 +405,7 @@ ABILITY_DISCHARGE = Ability(
     min_range=2,  # Cannot target adjacent/diagonal (ranged attack)
     damage_amount=2,  # Base damage
     status_text="разряд",
+    can_target_flying=True,  # Magical ranged attack
 )
 
 # Magic protection (zom) - immune to spells, magical strikes, and discharges
@@ -707,6 +741,8 @@ ABILITY_AXE_STRIKE = Ability(
     ability_type=AbilityType.ACTIVE,
     target_type=TargetType.ANY,  # Can target allies too
     range=1,  # Melee range
+    magic_damage=(0, 1, 2),  # Base damage per tier
+    magic_counter_bonus=1,  # +1 damage per counter spent
     status_text="маг. удар",
 )
 
@@ -735,6 +771,7 @@ ABILITY_ICICLE_THROW = Ability(
     ranged_type="throw",
     bonus_ranged_vs_defensive=1,
     status_text="метание дальность 3",
+    can_target_flying=True,  # Ranged throw
 )
 
 # Овражный гном: +1 attack vs tapped (closed) creatures
@@ -768,6 +805,7 @@ ABILITIES = {
     "crown_runner_shot": ABILITY_CROWN_RUNNER_SHOT,
     "lunge": ABILITY_LUNGE,
     "lunge_2": ABILITY_LUNGE_2,
+    "lunge_front_buff": ABILITY_LUNGE_FRONT_BUFF,
     "attack_exp": ABILITY_ATTACK_EXP,
     "front_row_bonus": ABILITY_FRONT_ROW_BONUS,
     "back_row_direct": ABILITY_BACK_ROW_DIRECT,
@@ -824,3 +862,18 @@ ABILITIES = {
 def get_ability(ability_id: str) -> Optional[Ability]:
     """Get ability by ID."""
     return ABILITIES.get(ability_id)
+
+
+def get_ability_registry_hash() -> str:
+    """Get a hash of the ability registry for version verification.
+
+    Used in network handshake to ensure client and server have matching ability definitions.
+    """
+    import hashlib
+    import json
+
+    # Build a deterministic representation of all abilities using to_dict()
+    abilities_data = {ability_id: ability.to_dict() for ability_id, ability in sorted(ABILITIES.items())}
+
+    data_str = json.dumps(abilities_data, sort_keys=True, ensure_ascii=False)
+    return hashlib.md5(data_str.encode('utf-8')).hexdigest()[:16]

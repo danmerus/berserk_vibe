@@ -470,10 +470,9 @@ def handle_axe_tap(game: "Game", card: "Card", target: Optional["Card"], ability
 
 @handler("axe_strike")
 def handle_axe_strike(game: "Game", card: "Card", target: Optional["Card"], ability: "Ability") -> bool:
-    """Axe strike: magical strike with counter-based damage (0-1-2 + counters spent)."""
-    from .game import CombatResult
-
-    counters_spent = game.selected_counters
+    """Axe strike: magical strike with counter-based damage."""
+    # Get counters_spent from interaction context
+    counters_spent = game.interaction.context.get('counters_spent', 0) if game.interaction else 0
     if counters_spent < 0 or counters_spent > card.counters:
         game.log(f"{card.name}: недостаточно фишек")
         return False
@@ -481,46 +480,7 @@ def handle_axe_strike(game: "Game", card: "Card", target: Optional["Card"], abil
     if not target:
         return False
 
-    # Roll for tier (like regular attack)
-    roll = game.roll_dice()
-    tier = game._get_attack_tier(roll)
-    tier_names = ["слабый", "средний", "сильный"]
-    base_damage = [0, 1, 2][tier]  # Base 0-1-2
-    total_damage = base_damage + counters_spent
-
-    card.counters -= counters_spent
-    game.emit_arrow(card.position, target.position, 'attack')
-    game.log(f"{card.name} маг. удар ({tier_names[tier]}, кубик {roll}): {base_damage}+{counters_spent} фишек = {total_damage}")
-
-    # Set last_combat to display dice roll
-    game.last_combat = CombatResult(
-        attacker_roll=roll,
-        defender_roll=0,
-        attacker_damage_dealt=total_damage,
-        defender_damage_dealt=0,
-        attacker_name=card.name,
-        defender_name=target.name
-    )
-
-    # Check magic immunity
-    if target.has_ability("magic_immune"):
-        game.log(f"  -> {target.name} защита от магии!")
-        game.emit_clear_arrows()
-        card.tap()
-        return True
-
-    game._deal_damage(target, total_damage, is_magical=True)
-    game.emit_clear_arrows()
-    game._handle_death(target, card)
-    card.tap()
-
-    # Clear counter selection state
-    game.counter_selection_card = None
-    game.counter_selection_ability = None
-    game.selected_counters = 0
-
-    game._check_winner()
-    return True
+    return game._magic_attack(card, target, ability.id, counters_spent)
 
 
 @handler("discharge")
@@ -559,10 +519,10 @@ def handle_discharge(game: "Game", card: "Card", target: Optional["Card"], abili
 
 @handler("magical_strike")
 def handle_magical_strike(game: "Game", card: "Card", target: Optional["Card"], ability: "Ability") -> bool:
-    """Magical strike: fixed damage that ignores reductions."""
+    """Magical strike: dice-based damage that ignores reductions."""
     if not target:
         return False
-    return game._magical_strike(card, target, ability.damage_amount)
+    return game._magic_attack(card, target, ability.id)
 
 
 def _handle_lunge(game: "Game", card: "Card", target: Optional["Card"], ability: "Ability") -> bool:

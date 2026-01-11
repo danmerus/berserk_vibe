@@ -1,8 +1,8 @@
 """Pygame rendering for the game."""
 import pygame
 import os
-from dataclasses import dataclass
-from typing import Optional, Tuple, List, Dict
+from dataclasses import dataclass, field
+from typing import Optional, Tuple, List, Dict, TYPE_CHECKING
 
 from .constants import (
     WINDOW_WIDTH, WINDOW_HEIGHT,
@@ -18,6 +18,18 @@ from .game import Game
 from .card import Card
 from .card_database import get_card_image
 from .abilities import get_ability, AbilityType
+
+if TYPE_CHECKING:
+    from .ui_state import UIState
+
+
+@dataclass
+class UIView:
+    """UI state snapshot for rendering (decoupled from Game/UIState)."""
+    selected_card: Optional[Card] = None
+    valid_moves: List[int] = field(default_factory=list)
+    valid_attacks: List[int] = field(default_factory=list)
+    attack_mode: bool = False
 
 
 @dataclass
@@ -123,6 +135,7 @@ class Renderer:
         # Ability button rects (for click detection)
         self.ability_button_rects = []
         self.attack_button_rect = None
+        self.prepare_flyer_button_rect = None
 
         # Card image cache
         self.card_images: Dict[str, pygame.Surface] = {}
@@ -158,6 +171,9 @@ class Renderer:
         # Interaction arrows (attack/heal/ability visualizations)
         # Each entry: {'from_pos': int, 'to_pos': int, 'color': tuple, 'life': float, 'max_life': float}
         self.arrows: List[dict] = []
+
+        # UI view state for rendering (decoupled from Game)
+        self._ui: UIView = UIView()
 
         # Priority phase animation
         self.priority_glow_timer: float = 0.0  # Cycles 0-2π for sine wave
@@ -466,27 +482,28 @@ class Renderer:
             return
 
         # Movement highlights (board only)
-        for pos in game.valid_moves:
+        for pos in self._ui.valid_moves:
             if self._is_flying_pos(pos):
                 continue
             x, y = self.pos_to_screen(pos)
             self.screen.blit(self.move_highlight, (x, y))
 
         # Attack highlights (board only)
-        for pos in game.valid_attacks:
+        for pos in self._ui.valid_attacks:
             if self._is_flying_pos(pos):
                 continue
             x, y = self.pos_to_screen(pos)
             self.screen.blit(self.attack_highlight, (x, y))
 
-    def draw_card(self, card: Card, x: int, y: int, selected: bool = False, glow_intensity: float = 0.0, game: 'Game' = None):
+    def draw_card(self, card: Card, x: int, y: int, selected: bool = False, glow_intensity: float = 0.0, game: 'Game' = None, glow_color: tuple = None):
         """Draw a single card with image.
 
         Args:
             card: Card to draw
             x, y: Position
             selected: Whether card is selected
-            glow_intensity: 0-1 for pulsing glow effect (instant abilities)
+            glow_intensity: 0-1 for pulsing glow effect (instant abilities, defenders)
+            glow_color: RGB tuple for glow color, defaults to golden (255, 220, 100)
         """
         # Card rectangle (slightly smaller than cell)
         card_rect = pygame.Rect(
@@ -498,7 +515,8 @@ class Renderer:
 
         # Draw pulsing glow effect if intensity > 0
         if glow_intensity > 0:
-            glow_color = (255, 220, 100)  # Golden glow
+            if glow_color is None:
+                glow_color = (255, 220, 100)  # Golden glow (default)
             glow_alpha = int(100 * glow_intensity)
             glow_size = int(6 + 4 * glow_intensity)  # Pulsing size
 
@@ -982,7 +1000,9 @@ class Renderer:
 
         # Calculate glow intensity for priority phase or forced attack (sine wave pulsing)
         glow_intensity = 0.0
-        glowing_card_ids = set()
+        glowing_card_ids = set()  # Golden glow (instant abilities, forced attack)
+        defender_card_ids = set()  # Red glow (valid defenders)
+
         if game.awaiting_priority:
             glow_intensity = 0.5 + 0.5 * math.sin(self.priority_glow_timer)
             # Get cards with legal instants for current priority player
@@ -993,14 +1013,24 @@ class Renderer:
             # Highlight cards that must attack
             for card_id in game.forced_attackers:
                 glowing_card_ids.add(card_id)
+        elif game.awaiting_defender and game.interaction:
+            # Highlight valid defenders with red glow
+            glow_intensity = 0.5 + 0.5 * math.sin(self.priority_glow_timer)
+            for card_id in game.interaction.valid_card_ids:
+                defender_card_ids.add(card_id)
 
         # Draw ground cards
         for pos, card in enumerate(game.board.cells):
             if card is not None:
                 x, y = self.pos_to_screen(pos)
-                selected = (game.selected_card == card)
-                card_glow = glow_intensity if card.id in glowing_card_ids else 0.0
-                self.draw_card(card, x, y, selected, card_glow, game)
+                selected = (self._ui.selected_card == card)
+                # Determine glow color based on whether it's a defender or instant ability
+                if card.id in defender_card_ids:
+                    self.draw_card(card, x, y, selected, glow_intensity, game, glow_color=(255, 100, 100))  # Red
+                elif card.id in glowing_card_ids:
+                    self.draw_card(card, x, y, selected, glow_intensity, game)  # Golden (default)
+                else:
+                    self.draw_card(card, x, y, selected, 0.0, game)
 
         # Flying cards are now drawn in draw_side_panels()
 
@@ -1068,8 +1098,8 @@ class Renderer:
             self.draw_defender_prompt(game)
 
         # Selected card info
-        if game.selected_card and not game.awaiting_defender:
-            self.draw_card_info(game.selected_card, game)
+        if self._ui.selected_card and not game.awaiting_defender:
+            self.draw_card_info(self._ui.selected_card, game)
 
         # Message log
         self.draw_messages(game)
@@ -1441,13 +1471,27 @@ class Renderer:
             statuses.append("прямой удар")
         if card.temp_attack_bonus > 0:
             statuses.append(f"+{card.temp_attack_bonus} атака")
-        if card.temp_dice_bonus > 0:
-            statuses.append(f"ОвА +{card.temp_dice_bonus}")
+
+        # Calculate total dice bonuses (from abilities + temp)
+        total_ova = card.temp_dice_bonus
+        total_ovz = 0
+        for ability_id in card.stats.ability_ids:
+            ability = get_ability(ability_id)
+            if ability:
+                total_ova += ability.dice_bonus_attack
+                total_ovz += ability.dice_bonus_defense
+
+        # Show unified dice bonuses
+        if total_ova > 0:
+            statuses.append(f"ОвА +{total_ova}")
+        if total_ovz > 0:
+            statuses.append(f"ОвЗ +{total_ovz}")
+
         # Defender buff (lasts until end of owner's next turn)
         if card.defender_buff_attack > 0:
             statuses.append(f"+{card.defender_buff_attack} защ.бафф")
         if card.defender_buff_dice > 0:
-            statuses.append(f"ОвА +{card.defender_buff_dice} защ.")
+            statuses.append(f"+{card.defender_buff_dice} защ.бросок")
         # Positional damage reduction (center column - weak attacks only)
         col = game._get_card_column(card)
         if card.has_ability("center_column_defense") and col == 2:
@@ -1481,10 +1525,27 @@ class Renderer:
                 stroy_parts.append(f"ОвЗ +{formation_def}")
             statuses.append(" ".join(stroy_parts))
 
+        # Prepared flyer attack
+        if card.can_attack_flyer:
+            statuses.append("ГОТОВ К АТАКЕ ЛЕТАЮЩИХ")
+
         # Pull status_text from abilities (passive/triggered only)
+        # Skip abilities that only provide dice bonuses (already shown unified above)
         for ability_id in card.stats.ability_ids:
             ability = get_ability(ability_id)
             if ability and ability.status_text:
+                # Skip if ability only provides dice bonus (already displayed)
+                if ability.dice_bonus_attack > 0 or ability.dice_bonus_defense > 0:
+                    # Check if ability has other effects beyond dice bonus
+                    has_other_effects = (
+                        ability.damage_reduction > 0 or
+                        ability.heal_amount > 0 or
+                        ability.damage_amount > 0 or
+                        ability.is_formation or
+                        ability.trigger is not None
+                    )
+                    if not has_other_effects:
+                        continue  # Skip - dice bonus already shown
                 statuses.append(ability.status_text)
 
         if statuses:
@@ -1523,8 +1584,8 @@ class Renderer:
         can_use = is_own_card and card.can_act
 
         # Check if in attack mode or has valid attacks
-        has_attacks = len(game.valid_attacks) > 0 if game.selected_card == card else False
-        in_attack_mode = game.attack_mode and game.selected_card == card
+        has_attacks = len(self._ui.valid_attacks) > 0 if self._ui.selected_card == card else False
+        in_attack_mode = self._ui.attack_mode and self._ui.selected_card == card
 
         if in_attack_mode:
             btn_color = (150, 60, 60)  # Red - attack mode active
@@ -1595,6 +1656,23 @@ class Renderer:
             if is_usable:
                 self.ability_button_rects.append((btn_rect, ability_id))
 
+            y_offset += btn_spacing
+
+        # Prepare Flyer Attack button (when opponent has only flyers)
+        self.prepare_flyer_button_rect = None
+        if game.can_prepare_flyer_attack(card):
+            btn_rect = pygame.Rect(panel_x + padding, panel_y + y_offset, panel_width - padding * 2, btn_height)
+            btn_color = (120, 80, 40)  # Orange-brown - special action
+            pygame.draw.rect(self.screen, btn_color, btn_rect)
+            pygame.draw.rect(self.screen, (180, 120, 60), btn_rect, 1)
+
+            btn_text = "Подготовить атаку летающих"
+            btn_surface = self.font_small.render(btn_text, True, COLOR_TEXT)
+            text_x = btn_rect.x + (btn_rect.width - btn_surface.get_width()) // 2
+            text_y = btn_rect.y + (btn_rect.height - btn_surface.get_height()) // 2
+            self.screen.blit(btn_surface, (text_x, text_y))
+
+            self.prepare_flyer_button_rect = btn_rect
             y_offset += btn_spacing
 
         # Card description (at the end)
@@ -1818,9 +1896,9 @@ class Renderer:
             attacker = game.board.get_card_by_id(dice.attacker_id)
             if not attacker:
                 return
-            is_ranged = dice.type == 'ranged'
-            defender = game.board.get_card_by_id(dice.defender_id) if dice.defender_id and not is_ranged else None
-            target = game.board.get_card_by_id(dice.target_id) if dice.target_id and is_ranged else None
+            is_single_roll = dice.type in ('ranged', 'magic')
+            defender = game.board.get_card_by_id(dice.defender_id) if dice.defender_id and not is_single_roll else None
+            target = game.board.get_card_by_id(dice.target_id) if dice.target_id and is_single_roll else None
 
             # Get base rolls, bonuses (ОвА/ОвЗ), and instant modifiers
             atk_roll = dice.atk_roll
@@ -1859,8 +1937,8 @@ class Renderer:
             self.screen.blit(atk_surface, (x, panel_y + 8))
             x += atk_surface.get_width()
 
-            if is_ranged and target:
-                # For ranged attacks, show " -> Target" instead of "vs defender[roll]"
+            if is_single_roll and target:
+                # For ranged/magic attacks, show " -> Target" instead of "vs defender[roll]"
                 arrow_surface = self.font_small.render(" → ", True, COLOR_TEXT)
                 self.screen.blit(arrow_surface, (x, panel_y + 8))
                 x += arrow_surface.get_width()
@@ -2141,6 +2219,35 @@ class Renderer:
         if has_p2_flyers and self.expanded_panel_p2 is None:
             self.expanded_panel_p2 = 'flyers'
 
+        # Force-expand flying panel when there are flying targets to select
+        # This ensures clicking on flying cards works for defender selection,
+        # counter shot, movement shot, ability targeting, etc.
+        needs_flying_selection = (
+            game.awaiting_defender or
+            game.awaiting_counter_shot or
+            game.awaiting_movement_shot or
+            game.awaiting_ability_target
+        )
+        if needs_flying_selection and game.interaction:
+            valid_positions = game.interaction.valid_positions
+            # Check if any valid target is in P1 flying zone
+            p1_flying_range = range(Board.FLYING_P1_START, Board.FLYING_P1_START + Board.FLYING_SLOTS)
+            if any(pos in valid_positions for pos in p1_flying_range):
+                self.expanded_panel_p1 = 'flyers'
+            # Check if any valid target is in P2 flying zone
+            p2_flying_range = range(Board.FLYING_P2_START, Board.FLYING_P2_START + Board.FLYING_SLOTS)
+            if any(pos in valid_positions for pos in p2_flying_range):
+                self.expanded_panel_p2 = 'flyers'
+
+        # Also expand when attack mode shows flying targets
+        if self._ui.attack_mode and self._ui.valid_attacks:
+            p1_flying_range = range(Board.FLYING_P1_START, Board.FLYING_P1_START + Board.FLYING_SLOTS)
+            if any(pos in self._ui.valid_attacks for pos in p1_flying_range):
+                self.expanded_panel_p1 = 'flyers'
+            p2_flying_range = range(Board.FLYING_P2_START, Board.FLYING_P2_START + Board.FLYING_SLOTS)
+            if any(pos in self._ui.valid_attacks for pos in p2_flying_range):
+                self.expanded_panel_p2 = 'flyers'
+
         panel_width = scaled(UILayout.SIDE_PANEL_WIDTH)
         tab_height = scaled(UILayout.SIDE_PANEL_TAB_HEIGHT)
         spacing = scaled(UILayout.SIDE_PANEL_SPACING)
@@ -2297,10 +2404,14 @@ class Renderer:
 
         # Collect highlighted positions for flying cards
         highlighted_positions = set()
-        highlight_type = None  # 'attack', 'move', 'ability', etc.
+        highlighted_card_ids = set()  # For defender highlighting (uses card IDs)
+        highlight_type = None  # 'attack', 'move', 'ability', 'defender', etc.
         if is_flyers and game:
             # Check various highlight modes
-            if game.awaiting_counter_shot and game.interaction:
+            if game.awaiting_defender and game.interaction:
+                highlighted_card_ids = set(game.interaction.valid_card_ids)
+                highlight_type = 'defender'
+            elif game.awaiting_counter_shot and game.interaction:
                 highlighted_positions = set(game.interaction.valid_positions)
                 highlight_type = 'counter_shot'
             elif game.awaiting_movement_shot and game.interaction:
@@ -2314,7 +2425,7 @@ class Renderer:
                 highlight_type = 'valhalla'
             else:
                 # Normal mode - check valid_attacks
-                highlighted_positions = set(game.valid_attacks)
+                highlighted_positions = set(self._ui.valid_attacks)
                 highlight_type = 'attack'
 
         for i, card in enumerate(cards):
@@ -2323,10 +2434,25 @@ class Renderer:
             if card_y + card_size > content_y and card_y < content_y + panel_height:
                 self.draw_card_thumbnail(card, card_x, card_y, card_size, game, is_graveyard)
 
+                # Draw selection border for selected flying card (gold)
+                if is_flyers and game and self._ui.selected_card == card:
+                    select_rect = pygame.Rect(card_x, card_y, card_size, card_size)
+                    pygame.draw.rect(self.screen, (255, 215, 0), select_rect, 3)  # Gold border
+
                 # Draw highlight as colored border around card (not covering art)
-                if is_flyers and card.position in highlighted_positions:
+                # Check both position-based and card-id-based highlights
+                is_highlighted = (
+                    (is_flyers and card.position in highlighted_positions) or
+                    (is_flyers and card.id in highlighted_card_ids)
+                )
+                if is_highlighted:
                     border_width = 4
-                    if highlight_type == 'attack':
+                    if highlight_type == 'defender':
+                        # Pulsing red glow for defenders
+                        import math
+                        glow_intensity = 0.5 + 0.5 * math.sin(self.priority_glow_timer)
+                        border_color = (255, int(100 * glow_intensity), int(100 * glow_intensity))
+                    elif highlight_type == 'attack':
                         border_color = (255, 100, 100)  # Red
                     elif highlight_type == 'ability':
                         border_color = (180, 100, 220)  # Purple
@@ -2432,12 +2558,31 @@ class Renderer:
 
         return None
 
-    def draw(self, game: Game, dt: float = 0.016):
-        """Main draw function."""
+    def draw(self, game: Game, dt: float = 0.016, ui_state: 'UIState' = None):
+        """Main draw function.
+
+        Args:
+            game: Game state to render
+            dt: Delta time for animations
+            ui_state: UIState for client-side selection/highlighting (required).
+        """
         import math
 
-        # Update priority glow animation timer (also used for forced attack highlight)
-        if game.awaiting_priority or game.has_forced_attack:
+        # Populate _ui from UIState
+        if ui_state is not None:
+            self._ui.selected_card = game.get_card_by_id(ui_state.selected_card_id) if ui_state.selected_card_id else None
+            self._ui.valid_moves = list(ui_state.valid_moves)
+            self._ui.valid_attacks = list(ui_state.valid_attacks)
+            self._ui.attack_mode = ui_state.attack_mode
+        else:
+            # No ui_state provided - clear all selection state
+            self._ui.selected_card = None
+            self._ui.valid_moves = []
+            self._ui.valid_attacks = []
+            self._ui.attack_mode = False
+
+        # Update priority glow animation timer (also used for forced attack and defender highlight)
+        if game.awaiting_priority or game.has_forced_attack or game.awaiting_defender:
             self.priority_glow_timer += dt * 4  # Speed of pulsing
             if self.priority_glow_timer > 2 * math.pi:
                 self.priority_glow_timer -= 2 * math.pi
@@ -2518,14 +2663,14 @@ class Renderer:
         attacker = game.board.get_card_by_id(dice.attacker_id)
         if not attacker:
             return
-        # For ranged attacks, there's no defender - use target_id instead
-        is_ranged = dice.type == 'ranged'
-        defender = game.board.get_card_by_id(dice.defender_id) if dice.defender_id and not is_ranged else None
-        target = game.board.get_card_by_id(dice.target_id) if dice.target_id and is_ranged else None
+        # For ranged/magic attacks, there's no defender - use target_id instead
+        is_single_roll = dice.type in ('ranged', 'magic')
+        defender = game.board.get_card_by_id(dice.defender_id) if dice.defender_id and not is_single_roll else None
+        target = game.board.get_card_by_id(dice.target_id) if dice.target_id and is_single_roll else None
 
         # Popup dimensions
         popup_width = 420
-        popup_height = 160 if is_ranged else 220  # Smaller popup for ranged (no defender row)
+        popup_height = 160 if is_single_roll else 220  # Smaller popup for ranged/magic (no defender row)
         popup_x = (WINDOW_WIDTH - popup_width) // 2
         popup_y = 100
 
@@ -2535,8 +2680,10 @@ class Renderer:
         self.screen.blit(bg_surface, (popup_x, popup_y))
         pygame.draw.rect(self.screen, (100, 80, 140), (popup_x, popup_y, popup_width, popup_height), 3)
 
-        # Title - different text for ranged attacks
-        if is_ranged:
+        # Title - different text for ranged/magic attacks
+        if dice.type == 'magic':
+            title_text = "Удача - изменить бросок (магия)"
+        elif dice.type == 'ranged':
             ranged_type = dice.ranged_type or 'shot'
             title_text = "Удача - изменить бросок (метание)" if ranged_type == "throw" else "Удача - изменить бросок (выстрел)"
         else:
@@ -2603,9 +2750,9 @@ class Renderer:
 
         y_offset += 55
 
-        # Defender dice row (only for combat, not ranged attacks, and only if defender rolled)
+        # Defender dice row (only for combat, not ranged/magic attacks, and only if defender rolled)
         # def_roll is 0 when attacking a tapped creature (no counter-attack)
-        if not is_ranged and defender and dice.def_roll > 0:
+        if not is_single_roll and defender and dice.def_roll > 0:
             def_color = COLOR_PLAYER1 if defender.player == 1 else COLOR_PLAYER2
             def_mod = dice.def_modifier  # Luck modifier
             def_bonus = dice.def_bonus   # Ability bonus (OvZ)
@@ -2657,8 +2804,8 @@ class Renderer:
                 btn_x += 52
 
             y_offset += 55
-        elif is_ranged and target:
-            # Show target info for ranged attacks (read-only, no dice to modify)
+        elif is_single_roll and target:
+            # Show target info for ranged/magic attacks (read-only, no dice to modify)
             target_color = COLOR_PLAYER1 if target.player == 1 else COLOR_PLAYER2
             target_name_surface = self.font_medium.render(f"Цель: {target.name}", True, target_color)
             self.screen.blit(target_name_surface, (popup_x + 15, y_offset))
@@ -2689,7 +2836,7 @@ class Renderer:
 
         card = game.counter_selection_card
         max_counters = card.counters
-        selected = game.selected_counters
+        selected = game.interaction.selected_amount if game.interaction else 0
 
         # Popup dimensions
         popup_width = 350
@@ -3266,8 +3413,8 @@ class Renderer:
         # Menu buttons
         buttons = [
             ("test_game", "Тестовая игра", True),
-            ("local_game", "Локальная игра", True),
-            ("network_game", "Игра по сети", False),
+            ("local_game", "Hotseat", True),
+            ("network_game", "Игра по сети", True),
             ("bot_game", "Игра с ботом", False),
             ("deck_builder", "Создание колоды", True),
             ("exit", "Выход", True),

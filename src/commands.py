@@ -32,6 +32,7 @@ class CommandType(Enum):
     MOVE = auto()
     ATTACK = auto()
     TOGGLE_ATTACK_MODE = auto()
+    PREPARE_FLYER_ATTACK = auto()  # Tap to prepare for attacking flyers
 
     # Abilities
     USE_ABILITY = auto()
@@ -126,6 +127,10 @@ def cmd_attack(player: int, card_id: int, position: int) -> Command:
 def cmd_toggle_attack_mode(player: int, card_id: Optional[int] = None) -> Command:
     """Toggle attack mode. card_id makes command self-contained for network play."""
     return Command(CommandType.TOGGLE_ATTACK_MODE, player, card_id=card_id)
+
+def cmd_prepare_flyer_attack(player: int, card_id: int) -> Command:
+    """Tap a ground card to prepare it to attack flyers (when opponent has only flyers)."""
+    return Command(CommandType.PREPARE_FLYER_ATTACK, player, card_id=card_id)
 
 def cmd_use_ability(player: int, card_id: int, ability_id: str, target_id: Optional[int] = None) -> Command:
     return Command(CommandType.USE_ABILITY, player, card_id=card_id, ability_id=ability_id, target_id=target_id)

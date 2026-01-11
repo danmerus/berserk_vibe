@@ -48,11 +48,14 @@ COLOR_HP_BAR_BG = (80, 30, 30)
 class AppState(Enum):
     """Application states."""
     MENU = auto()            # Main menu
-    GAME = auto()            # In-game
+    GAME = auto()            # In-game (local hotseat)
     DECK_BUILDER = auto()    # Deck building screen
     DECK_SELECT = auto()     # Deck selection for local game
     SQUAD_SELECT = auto()    # Squad selection (spending crystals)
     SQUAD_PLACE = auto()     # Squad placement on board
+    NETWORK_LOBBY = auto()   # Network game lobby (connect/create/join)
+    NETWORK_WAITING = auto() # Waiting for opponent to join
+    NETWORK_GAME = auto()    # Network game in progress
 
 
 class GamePhase(Enum):

@@ -28,8 +28,9 @@ class PlacementState:
         """Initialize placement state."""
         # Cards waiting to be placed (as Card objects)
         self.unplaced_cards: List[Card] = []
-        # Use player-based offset for globally unique IDs (P1: 0-99, P2: 100-199)
-        base_id = (self.player - 1) * 100
+        # Use player-based offset for globally unique IDs (P1: 1-100, P2: 101-200)
+        # Start at 1 to avoid ID 0 being treated as falsy in truthiness checks
+        base_id = (self.player - 1) * 100 + 1
 
         # Create card objects from squad names
         for i, name in enumerate(self.squad_cards):

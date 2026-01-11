@@ -1,0 +1,460 @@
+"""Network client for connecting to game server.
+
+Usage:
+    client = NetworkClient()
+    await client.connect('localhost', 7777)
+    await client.hello('PlayerName')
+    await client.create_match(['Циклоп', 'Гобрах', ...])
+    # or
+    await client.join_match('ABC123', ['Лёккен', ...])
+
+    # Send game commands
+    await client.send_command(cmd)
+
+    # Poll for updates
+    updates = client.get_pending_updates()
+"""
+
+import asyncio
+import ssl
+import logging
+import time
+from dataclasses import dataclass, field
+from typing import Callable, Dict, List, Optional, Any
+from enum import Enum, auto
+from queue import Queue, Empty
+import threading
+
+from .protocol import (
+    Message, MessageType, FrameReader,
+    msg_hello, msg_ping, msg_create_match, msg_join_match,
+    msg_command, msg_list_matches,
+)
+from ..match import get_content_hash, CommandResult
+from ..commands import Command, Event
+from ..game import Game
+
+logger = logging.getLogger(__name__)
+
+
+class ClientState(Enum):
+    """Client connection state."""
+    DISCONNECTED = auto()
+    CONNECTING = auto()
+    CONNECTED = auto()
+    IN_LOBBY = auto()
+    IN_MATCH = auto()
+    ERROR = auto()
+
+
+@dataclass
+class NetworkClient:
+    """Network client for multiplayer game.
+
+    Runs network I/O in a background thread to not block the game loop.
+    Uses queues for thread-safe communication.
+    """
+
+    # Connection
+    host: str = ""
+    port: int = 7777
+    use_tls: bool = False
+    certfile: Optional[str] = None  # For certificate pinning
+
+    # State
+    state: ClientState = ClientState.DISCONNECTED
+    player_id: str = ""
+    player_name: str = ""
+    match_id: str = ""
+    player_number: int = 0
+    error_message: str = ""
+
+    # Game state (updated from server)
+    game: Optional[Game] = None
+    opponent_name: str = ""
+
+    # Internal
+    _reader: Optional[asyncio.StreamReader] = None
+    _writer: Optional[asyncio.StreamWriter] = None
+    _loop: Optional[asyncio.AbstractEventLoop] = None
+    _thread: Optional[threading.Thread] = None
+    _running: bool = False
+
+    # Command tracking
+    _command_seq: int = 0
+    _server_seq: int = 0
+
+    # Thread-safe queues
+    _outgoing: Queue = field(default_factory=Queue)
+    _incoming: Queue = field(default_factory=Queue)
+
+    # Callbacks (called from main thread via poll)
+    on_connected: Optional[Callable[[], None]] = None
+    on_disconnected: Optional[Callable[[str], None]] = None
+    on_error: Optional[Callable[[str], None]] = None
+    on_match_created: Optional[Callable[[str], None]] = None
+    on_match_joined: Optional[Callable[[int, dict], None]] = None
+    on_player_joined: Optional[Callable[[int, str], None]] = None
+    on_game_start: Optional[Callable[[dict], None]] = None
+    on_update: Optional[Callable[[CommandResult], None]] = None
+    on_game_over: Optional[Callable[[int], None]] = None
+    on_match_list: Optional[Callable[[List[dict]], None]] = None
+
+    def __post_init__(self):
+        self._outgoing = Queue()
+        self._incoming = Queue()
+
+    # =========================================================================
+    # PUBLIC API (called from main thread)
+    # =========================================================================
+
+    def connect(self, host: str, port: int, player_name: str, use_tls: bool = False):
+        """Start connection to server (non-blocking)."""
+        if self._running:
+            return
+
+        self.host = host
+        self.port = port
+        self.player_name = player_name
+        self.use_tls = use_tls
+        self.state = ClientState.CONNECTING
+        self.error_message = ""
+
+        # Start network thread
+        self._running = True
+        self._thread = threading.Thread(target=self._run_network_thread, daemon=True)
+        self._thread.start()
+
+    def disconnect(self):
+        """Disconnect from server."""
+        self._running = False
+        self._queue_message(None)  # Signal to stop
+
+        if self._thread:
+            self._thread.join(timeout=2.0)
+            self._thread = None
+
+        self.state = ClientState.DISCONNECTED
+
+    def create_match(self, squad: List[str]):
+        """Create a new match."""
+        if self.state != ClientState.IN_LOBBY:
+            return
+        self._queue_message(msg_create_match(squad))
+
+    def join_match(self, match_id: str, squad: List[str]):
+        """Join an existing match."""
+        if self.state != ClientState.IN_LOBBY:
+            return
+        self._queue_message(msg_join_match(match_id, squad))
+
+    def list_matches(self):
+        """Request list of open matches."""
+        if self.state != ClientState.IN_LOBBY:
+            return
+        self._queue_message(msg_list_matches())
+
+    def send_command(self, cmd: Command):
+        """Send a game command."""
+        if self.state != ClientState.IN_MATCH:
+            return
+
+        self._command_seq += 1
+        self._queue_message(msg_command(cmd, self._command_seq))
+
+    def poll(self):
+        """Process pending messages from network thread.
+
+        Call this from your game loop to handle callbacks.
+        """
+        while True:
+            try:
+                msg_type, data = self._incoming.get_nowait()
+            except Empty:
+                break
+
+            self._handle_incoming(msg_type, data)
+
+    def _queue_message(self, msg: Optional[Message]):
+        """Queue message for sending."""
+        self._outgoing.put(msg)
+
+    def _handle_incoming(self, msg_type: str, data: Any):
+        """Handle incoming message in main thread."""
+        if msg_type == 'connected':
+            self.state = ClientState.IN_LOBBY
+            if self.on_connected:
+                self.on_connected()
+
+        elif msg_type == 'disconnected':
+            self.state = ClientState.DISCONNECTED
+            if self.on_disconnected:
+                self.on_disconnected(data)
+
+        elif msg_type == 'error':
+            self.error_message = data
+            if self.on_error:
+                self.on_error(data)
+
+        elif msg_type == 'match_created':
+            self.match_id = data
+            if self.on_match_created:
+                self.on_match_created(data)
+
+        elif msg_type == 'match_joined':
+            self.match_id = data['match_id']
+            self.player_number = data['player']
+            self.state = ClientState.IN_MATCH
+            # Reconstruct game from snapshot
+            if data.get('snapshot'):
+                self.game = Game.from_dict(data['snapshot'])
+            if self.on_match_joined:
+                self.on_match_joined(data['player'], data.get('snapshot', {}))
+
+        elif msg_type == 'player_joined':
+            self.opponent_name = data.get('player_name', '')
+            if self.on_player_joined:
+                self.on_player_joined(data['player'], data.get('player_name', ''))
+
+        elif msg_type == 'game_start':
+            self.state = ClientState.IN_MATCH
+            if data.get('snapshot'):
+                self.game = Game.from_dict(data['snapshot'])
+            if self.on_game_start:
+                self.on_game_start(data.get('snapshot', {}))
+
+        elif msg_type == 'update':
+            # Reconstruct CommandResult
+            result = CommandResult(
+                accepted=data.get('accepted', False),
+                events=[Event.from_dict(e) for e in data.get('events', [])],
+                snapshot=data.get('snapshot'),
+                error=data.get('error'),
+            )
+            # Update local game state
+            if result.snapshot:
+                self.game = Game.from_dict(result.snapshot)
+            if self.on_update:
+                self.on_update(result)
+
+        elif msg_type == 'resync':
+            if data.get('snapshot'):
+                self.game = Game.from_dict(data['snapshot'])
+
+        elif msg_type == 'game_over':
+            if self.on_game_over:
+                self.on_game_over(data.get('winner', 0))
+
+        elif msg_type == 'match_list':
+            if self.on_match_list:
+                self.on_match_list(data.get('matches', []))
+
+    # =========================================================================
+    # NETWORK THREAD
+    # =========================================================================
+
+    def _run_network_thread(self):
+        """Run the async network loop in background thread."""
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+
+        try:
+            self._loop.run_until_complete(self._network_main())
+        except Exception as e:
+            logger.error(f"Network thread error: {e}")
+            self._incoming.put(('error', str(e)))
+        finally:
+            self._loop.close()
+            self._loop = None
+
+    async def _network_main(self):
+        """Main async network loop."""
+        try:
+            await self._connect()
+            await self._handshake()
+
+            # Start tasks
+            recv_task = asyncio.create_task(self._receive_loop())
+            send_task = asyncio.create_task(self._send_loop())
+            ping_task = asyncio.create_task(self._ping_loop())
+
+            # Wait for any task to complete (error or shutdown)
+            done, pending = await asyncio.wait(
+                [recv_task, send_task, ping_task],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            # Cancel remaining tasks
+            for task in pending:
+                task.cancel()
+
+        except Exception as e:
+            logger.error(f"Network error: {e}")
+            self._incoming.put(('error', str(e)))
+        finally:
+            await self._cleanup()
+
+    async def _connect(self):
+        """Establish connection to server."""
+        ssl_ctx = None
+        if self.use_tls:
+            ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            if self.certfile:
+                # Certificate pinning
+                ssl_ctx.load_verify_locations(self.certfile)
+                ssl_ctx.verify_mode = ssl.CERT_REQUIRED
+            else:
+                # No verification (development only!)
+                ssl_ctx.check_hostname = False
+                ssl_ctx.verify_mode = ssl.CERT_NONE
+
+        self._reader, self._writer = await asyncio.wait_for(
+            asyncio.open_connection(self.host, self.port, ssl=ssl_ctx),
+            timeout=10.0,
+        )
+
+        logger.info(f"Connected to {self.host}:{self.port}")
+
+    async def _handshake(self):
+        """Perform hello/welcome handshake."""
+        content_hash = get_content_hash()
+        hello = msg_hello(self.player_name, content_hash)
+        await self._send_message(hello)
+
+        # Wait for welcome
+        msg = await self._receive_message()
+        if msg.type == MessageType.WELCOME:
+            self.player_id = msg.payload.get('player_id', '')
+            self._incoming.put(('connected', None))
+        elif msg.type == MessageType.ERROR:
+            raise ConnectionError(msg.payload.get('error', 'Handshake failed'))
+        else:
+            raise ConnectionError(f"Unexpected response: {msg.type}")
+
+    async def _receive_loop(self):
+        """Loop receiving messages from server."""
+        frame_reader = FrameReader()
+
+        while self._running:
+            data = await self._reader.read(4096)
+            if not data:
+                self._incoming.put(('disconnected', 'Connection closed'))
+                break
+
+            frame_reader.feed(data)
+
+            while True:
+                msg = frame_reader.get_message()
+                if msg is None:
+                    break
+                await self._handle_server_message(msg)
+
+    async def _send_loop(self):
+        """Loop sending queued messages to server."""
+        while self._running:
+            # Check queue with timeout to allow shutdown
+            try:
+                msg = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: self._outgoing.get(timeout=0.1)
+                )
+            except Empty:
+                continue
+
+            if msg is None:
+                break  # Shutdown signal
+
+            await self._send_message(msg)
+
+    async def _ping_loop(self):
+        """Send periodic pings."""
+        while self._running:
+            await asyncio.sleep(5)
+            try:
+                await self._send_message(msg_ping())
+            except Exception:
+                break
+
+    async def _send_message(self, msg: Message):
+        """Send message to server."""
+        self._writer.write(msg.to_bytes())
+        await self._writer.drain()
+
+    async def _receive_message(self) -> Message:
+        """Receive single message from server."""
+        frame_reader = FrameReader()
+
+        while True:
+            data = await self._reader.read(4096)
+            if not data:
+                raise ConnectionError("Connection closed")
+
+            frame_reader.feed(data)
+            msg = frame_reader.get_message()
+            if msg:
+                return msg
+
+    async def _handle_server_message(self, msg: Message):
+        """Handle message from server."""
+        if msg.type == MessageType.PONG:
+            pass  # Keepalive response, ignore
+
+        elif msg.type == MessageType.ERROR:
+            self._incoming.put(('error', msg.payload.get('error', 'Unknown error')))
+
+        elif msg.type == MessageType.MATCH_CREATED:
+            self._incoming.put(('match_created', msg.match_id))
+
+        elif msg.type == MessageType.MATCH_JOINED:
+            self._incoming.put(('match_joined', {
+                'match_id': msg.match_id,
+                'player': msg.payload.get('player', 0),
+                'snapshot': msg.payload.get('snapshot'),
+            }))
+
+        elif msg.type == MessageType.PLAYER_JOINED:
+            self._incoming.put(('player_joined', {
+                'player': msg.payload.get('player', 0),
+                'player_name': msg.payload.get('player_name', ''),
+            }))
+
+        elif msg.type == MessageType.GAME_START:
+            self._incoming.put(('game_start', {
+                'snapshot': msg.payload.get('snapshot'),
+            }))
+
+        elif msg.type == MessageType.UPDATE:
+            self._server_seq = msg.seq
+            self._incoming.put(('update', msg.payload))
+
+        elif msg.type == MessageType.RESYNC:
+            self._server_seq = msg.seq
+            self._incoming.put(('resync', {
+                'snapshot': msg.payload.get('snapshot'),
+            }))
+
+        elif msg.type == MessageType.GAME_OVER:
+            self._incoming.put(('game_over', {
+                'winner': msg.payload.get('winner', 0),
+            }))
+
+        elif msg.type == MessageType.MATCH_LIST:
+            self._incoming.put(('match_list', {
+                'matches': msg.payload.get('matches', []),
+            }))
+
+        else:
+            logger.warning(f"Unhandled message type: {msg.type}")
+
+    async def _cleanup(self):
+        """Clean up connection."""
+        if self._writer:
+            try:
+                self._writer.close()
+                await self._writer.wait_closed()
+            except Exception:
+                pass
+
+        self._reader = None
+        self._writer = None
+        self._incoming.put(('disconnected', 'Connection closed'))
