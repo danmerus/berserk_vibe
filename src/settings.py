@@ -12,6 +12,7 @@ SETTINGS_FILE = SETTINGS_DIR / "settings.json"
 DEFAULT_SETTINGS = {
     "resolution": [1920, 1080],
     "fullscreen": False,
+    "nickname": "",
 }
 
 
@@ -73,4 +74,17 @@ def set_fullscreen(fullscreen: bool):
     """Save fullscreen setting."""
     settings = load_settings()
     settings["fullscreen"] = fullscreen
+    save_settings(settings)
+
+
+def get_nickname() -> str:
+    """Get saved nickname for network games."""
+    settings = load_settings()
+    return settings.get("nickname", "")
+
+
+def set_nickname(nickname: str):
+    """Save nickname setting."""
+    settings = load_settings()
+    settings["nickname"] = nickname
     save_settings(settings)

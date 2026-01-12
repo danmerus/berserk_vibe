@@ -1556,8 +1556,14 @@ class Game:
         return bonus
 
     def _is_diagonal_attack(self, attacker: Card, defender: Card) -> bool:
-        """Check if attack is diagonal."""
+        """Check if attack is diagonal.
+
+        Flying attacks are never considered diagonal (they attack from above).
+        """
         if attacker.position is None or defender.position is None:
+            return False
+        # Flying creatures (positions 30+) don't attack diagonally
+        if attacker.position >= 30 or defender.position >= 30:
             return False
         atk_col, atk_row = attacker.position % 5, attacker.position // 5
         def_col, def_row = defender.position % 5, defender.position // 5

@@ -29,6 +29,7 @@ from .protocol import (
     Message, MessageType, FrameReader,
     msg_hello, msg_ping, msg_create_match, msg_join_match,
     msg_command, msg_list_matches, msg_player_ready, msg_leave_match,
+    msg_chat, msg_draw_offer, msg_draw_accept,
 )
 from ..match import get_content_hash, CommandResult
 from ..commands import Command, Event
@@ -100,6 +101,8 @@ class NetworkClient:
     on_update: Optional[Callable[[CommandResult], None]] = None
     on_game_over: Optional[Callable[[int], None]] = None
     on_match_list: Optional[Callable[[List[dict]], None]] = None
+    on_chat: Optional[Callable[[str, str, int], None]] = None  # player_name, text, player_number
+    on_draw_offered: Optional[Callable[[int], None]] = None  # player_number who offered
 
     def __post_init__(self):
         self._outgoing = Queue()
@@ -185,6 +188,24 @@ class NetworkClient:
 
         self._command_seq += 1
         self._queue_message(msg_command(cmd, self._command_seq))
+
+    def send_chat(self, text: str):
+        """Send a chat message."""
+        if self.state != ClientState.IN_MATCH:
+            return
+        self._queue_message(msg_chat(text, self.player_name))
+
+    def send_draw_offer(self):
+        """Offer a draw to opponent."""
+        if self.state != ClientState.IN_MATCH:
+            return
+        self._queue_message(msg_draw_offer())
+
+    def send_draw_accept(self):
+        """Accept a draw offer."""
+        if self.state != ClientState.IN_MATCH:
+            return
+        self._queue_message(msg_draw_accept())
 
     def poll(self):
         """Process pending messages from network thread.
@@ -274,12 +295,29 @@ class NetworkClient:
                 self.game = Game.from_dict(data['snapshot'])
 
         elif msg_type == 'game_over':
+            # Update game state
+            winner = data.get('winner', 0)
+            if self.game:
+                from src.constants import GamePhase
+                self.game.phase = GamePhase.GAME_OVER
+                self.game.winner = winner
             if self.on_game_over:
-                self.on_game_over(data.get('winner', 0))
+                self.on_game_over(winner)
 
         elif msg_type == 'match_list':
             if self.on_match_list:
                 self.on_match_list(data.get('matches', []))
+
+        elif msg_type == 'chat':
+            if self.on_chat:
+                self.on_chat(data.get('player_name', ''), data.get('text', ''), data.get('player_number', 0))
+
+        elif msg_type == 'draw_offered':
+            print(f"[DEBUG] Client received draw_offered: {data}")
+            if self.on_draw_offered:
+                self.on_draw_offered(data.get('player_number', 0))
+            else:
+                print("[DEBUG] No on_draw_offered callback set!")
 
     # =========================================================================
     # NETWORK THREAD
@@ -486,6 +524,18 @@ class NetworkClient:
         elif msg.type == MessageType.MATCH_LIST:
             self._incoming.put(('match_list', {
                 'matches': msg.payload.get('matches', []),
+            }))
+
+        elif msg.type == MessageType.CHAT:
+            self._incoming.put(('chat', {
+                'player_name': msg.payload.get('player_name', ''),
+                'text': msg.payload.get('text', ''),
+                'player_number': msg.payload.get('player_number', 0),
+            }))
+
+        elif msg.type == MessageType.DRAW_OFFERED:
+            self._incoming.put(('draw_offered', {
+                'player_number': msg.payload.get('player_number', 0),
             }))
 
         else:

@@ -120,6 +120,9 @@ class MatchSession:
     # Creation time for cleanup
     created_at: float = field(default_factory=time.time)
 
+    # Draw offer state (which player offered, 0 = no offer)
+    draw_offered_by: int = 0
+
     @property
     def is_full(self) -> bool:
         """Check if match has both players."""

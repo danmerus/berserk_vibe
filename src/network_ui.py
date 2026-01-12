@@ -155,10 +155,12 @@ class NetworkUI:
 
     def __post_init__(self):
         self.buttons = []
-        # Initialize text inputs
+        # Initialize text inputs - load saved nickname
+        from .settings import get_nickname
+        saved_nickname = get_nickname() or "Player"
         self.inputs = {
             'server': TextInput(value="", max_length=50),
-            'name': TextInput(value="Player", max_length=20),
+            'name': TextInput(value=saved_nickname, max_length=20),
             'code': TextInput(value="", max_length=6, uppercase=True, allowed_chars="ABCDEF0123456789"),
         }
         self._setup_client()
@@ -309,6 +311,11 @@ class NetworkUI:
 
     def _set_active_input(self, field: str):
         """Set which input field is active."""
+        # If clicking on same field that's already active, do nothing
+        # (let handle_mouse_event handle cursor positioning)
+        if field == self.active_input and field in self.inputs and self.inputs[field].active:
+            return
+
         # Deactivate old input
         if self.active_input and self.active_input in self.inputs:
             self.inputs[self.active_input].deactivate()

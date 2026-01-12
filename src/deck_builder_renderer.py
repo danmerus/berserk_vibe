@@ -8,6 +8,7 @@ from .constants import (
 )
 from .card_database import CARD_DATABASE, get_card_image
 from .deck_builder import DeckBuilder
+from .text_input import TextInput, draw_text_input_field
 
 
 class DeckBuilderRenderer:
@@ -34,11 +35,9 @@ class DeckBuilderRenderer:
         self.dragging_scrollbar = False
         self.scrollbar_rect: Optional[pygame.Rect] = None
 
-        # Input state for text entry
-        self.text_input_active = False
-        self.text_input_value = ""
-        self.text_cursor_pos = 0
-        self.cursor_blink_timer = 0
+        # Input state for text entry (using TextInput class)
+        self.text_input = TextInput(max_length=50)
+        self.text_input_rect: Optional[pygame.Rect] = None
 
         # Popup for card preview
         self.popup_card_name: Optional[str] = None
@@ -73,6 +72,11 @@ class DeckBuilderRenderer:
         # Selection mode (hides save/load buttons, shows only confirm)
         self.selection_mode = False
 
+    @property
+    def text_input_active(self) -> bool:
+        """Check if text input is active (for backwards compatibility)."""
+        return self.text_input.active
+
     def draw(self, deck_builder: DeckBuilder, card_images_full: Dict):
         """Draw the complete deck builder screen."""
         self.screen.fill(COLOR_BG)
@@ -96,7 +100,7 @@ class DeckBuilderRenderer:
         # Draw popups on top
         if self.show_load_popup:
             self._draw_load_popup()
-        if self.text_input_active:
+        if self.text_input.active:
             self._draw_text_input()
         if self.show_confirm_popup:
             self._draw_confirm_popup()
@@ -501,31 +505,17 @@ class DeckBuilderRenderer:
         title = self.fonts['medium'].render("Название колоды:", True, COLOR_TEXT)
         self.screen.blit(title, (popup_x + 20, popup_y + 20))
 
-        input_rect = pygame.Rect(popup_x + 20, popup_y + 55, popup_w - 40, scaled(35))
-        pygame.draw.rect(self.screen, (30, 30, 40), input_rect)
-        pygame.draw.rect(self.screen, (100, 100, 120), input_rect, 2)
+        # Draw text input field using TextInput class
+        self.text_input_rect = draw_text_input_field(
+            self.screen, self.fonts['medium'], self.text_input,
+            popup_x + 20, popup_y + 55, popup_w - 40, scaled(35),
+            bg_color=(30, 30, 40),
+            bg_active_color=(40, 40, 50),
+            border_color=(100, 100, 120),
+            border_active_color=(140, 120, 160),
+        )
 
-        # Draw text with cursor
-        text_before_cursor = self.text_input_value[:self.text_cursor_pos]
-        text_after_cursor = self.text_input_value[self.text_cursor_pos:]
-
-        # Render text before cursor to get cursor x position
-        before_surface = self.fonts['medium'].render(text_before_cursor, True, COLOR_TEXT)
-        full_surface = self.fonts['medium'].render(self.text_input_value, True, COLOR_TEXT)
-
-        text_x = input_rect.x + 10
-        text_y = input_rect.y + (input_rect.height - full_surface.get_height()) // 2
-        self.screen.blit(full_surface, (text_x, text_y))
-
-        # Draw blinking cursor
-        self.cursor_blink_timer = (self.cursor_blink_timer + 1) % 60
-        if self.cursor_blink_timer < 30:
-            cursor_x = text_x + before_surface.get_width()
-            cursor_y = text_y
-            cursor_h = full_surface.get_height()
-            pygame.draw.line(self.screen, COLOR_TEXT, (cursor_x, cursor_y), (cursor_x, cursor_y + cursor_h), 2)
-
-        hint = self.fonts['small'].render("Enter - подтвердить, Esc - отмена, Ctrl+V - вставить", True, (120, 120, 140))
+        hint = self.fonts['small'].render("Enter - подтвердить, Esc - отмена", True, (120, 120, 140))
         self.screen.blit(hint, (popup_x + 20, popup_y + 110))
 
     def _draw_load_popup(self):
@@ -662,76 +652,33 @@ class DeckBuilderRenderer:
 
     def start_text_input(self, initial_value: str = ""):
         """Start text input mode."""
-        self.text_input_active = True
-        self.text_input_value = initial_value
-        self.text_cursor_pos = len(initial_value)
-        pygame.key.start_text_input()
+        self.text_input.activate(initial_value)
 
     def stop_text_input(self):
         """Stop text input mode."""
-        self.text_input_active = False
-        self.text_input_value = ""
-        self.text_cursor_pos = 0
-        pygame.key.stop_text_input()
+        self.text_input.deactivate()
 
     def handle_text_input(self, event: pygame.event.Event) -> Optional[str]:
         """Handle text input events. Returns value on Enter, None otherwise."""
-        if not self.text_input_active:
+        if not self.text_input.active:
             return None
 
-        # Handle TEXTINPUT events (actual character input)
-        if event.type == pygame.TEXTINPUT:
-            # Insert text at cursor position
-            self.text_input_value = (self.text_input_value[:self.text_cursor_pos] +
-                                     event.text +
-                                     self.text_input_value[self.text_cursor_pos:])
-            self.text_cursor_pos += len(event.text)
+        result = self.text_input.handle_event(event)
+        if result == 'submit':
+            value = self.text_input.value
+            self.stop_text_input()
+            return value
+        elif result == 'cancel':
+            self.stop_text_input()
             return None
-
-        # Handle KEYDOWN for control keys
-        if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_RETURN:
-                value = self.text_input_value
-                self.stop_text_input()
-                return value
-            elif event.key == pygame.K_ESCAPE:
-                self.stop_text_input()
-                return None
-            elif event.key == pygame.K_BACKSPACE:
-                if self.text_cursor_pos > 0:
-                    self.text_input_value = (self.text_input_value[:self.text_cursor_pos-1] +
-                                             self.text_input_value[self.text_cursor_pos:])
-                    self.text_cursor_pos -= 1
-            elif event.key == pygame.K_DELETE:
-                if self.text_cursor_pos < len(self.text_input_value):
-                    self.text_input_value = (self.text_input_value[:self.text_cursor_pos] +
-                                             self.text_input_value[self.text_cursor_pos+1:])
-            elif event.key == pygame.K_LEFT:
-                self.text_cursor_pos = max(0, self.text_cursor_pos - 1)
-            elif event.key == pygame.K_RIGHT:
-                self.text_cursor_pos = min(len(self.text_input_value), self.text_cursor_pos + 1)
-            elif event.key == pygame.K_HOME:
-                self.text_cursor_pos = 0
-            elif event.key == pygame.K_END:
-                self.text_cursor_pos = len(self.text_input_value)
-            elif event.key == pygame.K_v and (event.mod & pygame.KMOD_CTRL):
-                # Ctrl+V - Paste
-                try:
-                    pygame.scrap.init()
-                    clipboard = pygame.scrap.get(pygame.SCRAP_TEXT)
-                    if clipboard:
-                        paste_text = clipboard.decode('utf-8').rstrip('\x00')
-                        self.text_input_value = (self.text_input_value[:self.text_cursor_pos] +
-                                                 paste_text +
-                                                 self.text_input_value[self.text_cursor_pos:])
-                        self.text_cursor_pos += len(paste_text)
-                except Exception:
-                    pass
-            elif event.key == pygame.K_a and (event.mod & pygame.KMOD_CTRL):
-                # Ctrl+A - Select all (just move cursor to end for now)
-                self.text_cursor_pos = len(self.text_input_value)
 
         return None
+
+    def handle_text_mouse_event(self, event: pygame.event.Event):
+        """Handle mouse events for text input selection."""
+        if not self.text_input.active or not self.text_input_rect:
+            return
+        self.text_input.handle_mouse_event(event, self.text_input_rect, self.fonts['medium'])
 
     def hide_load_popup(self):
         """Hide the load deck popup."""

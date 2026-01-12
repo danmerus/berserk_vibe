@@ -20,7 +20,7 @@ from .protocol import (
     Message, MessageType, FrameReader,
     msg_welcome, msg_error, msg_pong, msg_match_created, msg_match_joined,
     msg_player_joined, msg_game_start, msg_update, msg_resync, msg_game_over,
-    msg_match_list, msg_player_ready_status,
+    msg_match_list, msg_player_ready_status, msg_chat, msg_draw_offered,
 )
 from .session import PlayerSession, MatchSession, SessionState
 from ..match import MatchServer, get_content_hash
@@ -206,6 +206,9 @@ class GameServer:
             MessageType.PLACEMENT_DONE: self._handle_placement_done,
             MessageType.COMMAND: self._handle_command,
             MessageType.REQUEST_RESYNC: self._handle_resync_request,
+            MessageType.CHAT: self._handle_chat,
+            MessageType.DRAW_OFFER: self._handle_draw_offer,
+            MessageType.DRAW_ACCEPT: self._handle_draw_accept,
         }
 
         handler = handlers.get(msg.type)
@@ -537,6 +540,73 @@ class GameServer:
         snapshot = match.server.get_snapshot(for_player=session.player_number)
         seq = session.next_server_seq()
         await self._send(session, msg_resync(snapshot, seq))
+
+    async def _handle_chat(self, session: PlayerSession, msg: Message):
+        """Handle chat message - broadcast to all players in match."""
+        if session.state != SessionState.IN_MATCH:
+            return
+
+        match = self.matches.get(session.match_id)
+        if not match:
+            return
+
+        text = msg.payload.get('text', '')
+        if not text:
+            return
+
+        # Use the session's player_name and player_number for security (not what client sent)
+        chat_msg = msg_chat(text, session.player_name, session.player_number)
+
+        # Broadcast to all players in the match (including sender)
+        await self._broadcast_match(match, chat_msg)
+        logger.debug(f"Chat [{match.match_id}] {session.player_name}: {text}")
+
+    async def _handle_draw_offer(self, session: PlayerSession, msg: Message):
+        """Handle draw offer - notify opponent."""
+        if session.state != SessionState.IN_MATCH:
+            return
+
+        match = self.matches.get(session.match_id)
+        if not match or not match.is_started:
+            return
+
+        # Can't offer draw if there's already an offer from us
+        if match.draw_offered_by == session.player_number:
+            return
+
+        # If opponent already offered, this is effectively an accept
+        if match.draw_offered_by != 0 and match.draw_offered_by != session.player_number:
+            await self._handle_draw_accept(session, msg)
+            return
+
+        # Record the offer
+        match.draw_offered_by = session.player_number
+
+        # Notify opponent
+        opponent = match.get_opponent_session(session.player_number)
+        if opponent:
+            await self._send(opponent, msg_draw_offered(session.player_number))
+
+        logger.info(f"Match {match.match_id}: Player {session.player_number} offered draw")
+
+    async def _handle_draw_accept(self, session: PlayerSession, msg: Message):
+        """Handle draw accept - end game in draw."""
+        if session.state != SessionState.IN_MATCH:
+            return
+
+        match = self.matches.get(session.match_id)
+        if not match or not match.is_started:
+            return
+
+        # Can only accept if opponent offered
+        if match.draw_offered_by == 0 or match.draw_offered_by == session.player_number:
+            return
+
+        # End game in draw
+        match.is_finished = True
+        match.winner = 0  # 0 = draw
+        await self._broadcast_match(match, msg_game_over(0))
+        logger.info(f"Match {match.match_id} ended in draw (accepted by P{session.player_number})")
 
     async def _broadcast_match(self, match: MatchSession, msg: Message):
         """Broadcast message to all players in a match."""

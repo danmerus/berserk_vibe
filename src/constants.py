@@ -200,6 +200,35 @@ class UILayout:
     COMBAT_LOG_LINE_HEIGHT = 18
 
     # -------------------------------------------------------------------------
+    # CHAT (network games only, left side)
+    # -------------------------------------------------------------------------
+    CHAT_X = 10
+    CHAT_Y = 120
+    CHAT_WIDTH = 200
+    CHAT_HEIGHT = 380
+    CHAT_INPUT_HEIGHT = 32
+    CHAT_TITLE_HEIGHT = 24
+    CHAT_MESSAGE_PADDING = 4
+
+    # -------------------------------------------------------------------------
+    # DRAW BUTTON (network games only, below chat)
+    # -------------------------------------------------------------------------
+    DRAW_BUTTON_OFFSET_Y = 150      # Gap between chat and draw button
+    DRAW_BUTTON_HEIGHT = 30
+    # Colors (normal state)
+    DRAW_BUTTON_BG = (60, 60, 70)
+    DRAW_BUTTON_BORDER = (100, 100, 110)
+    DRAW_BUTTON_TEXT = (200, 200, 200)
+    # Colors (opponent offered - accept state)
+    DRAW_BUTTON_ACCEPT_BG = (70, 130, 70)
+    DRAW_BUTTON_ACCEPT_BG_FLASH = (80, 140, 80)
+    DRAW_BUTTON_ACCEPT_BG_DARK = (60, 100, 60)
+    DRAW_BUTTON_ACCEPT_TEXT = (240, 240, 240)
+    # Colors (we offered - waiting state)
+    DRAW_BUTTON_WAITING_BG = (80, 80, 60)
+    DRAW_BUTTON_WAITING_TEXT = (180, 180, 150)
+
+    # -------------------------------------------------------------------------
     # CARD INDICATORS (on card surface)
     # -------------------------------------------------------------------------
     INDICATOR_HP_WIDTH = 30    # Was 38, reduced 15%
@@ -214,11 +243,82 @@ class UILayout:
     NAME_BAR_HEIGHT = 16       # Card name bar height
 
     # -------------------------------------------------------------------------
-    # POPUPS
+    # POPUPS - General settings
     # -------------------------------------------------------------------------
     POPUP_DEFAULT_Y = 60       # Default Y position for popups
-    POPUP_CARD_WIDTH = 350     # Full card popup width
-    POPUP_CARD_HEIGHT = 500    # Full card popup height
+    POPUP_BORDER_WIDTH = 2     # Border thickness for all popups
+
+    # Card preview popup (right-click on card)
+    POPUP_CARD_WIDTH = 350
+    POPUP_CARD_HEIGHT = 500
+
+    # -------------------------------------------------------------------------
+    # INTERACTION POPUPS (defender choice, valhalla, heal confirm, etc.)
+    # -------------------------------------------------------------------------
+    # Defender choice popup
+    POPUP_DEFENDER_WIDTH = 500
+    POPUP_DEFENDER_HEIGHT = 100
+    POPUP_DEFENDER_BG = (0, 80, 80, 230)
+    POPUP_DEFENDER_BORDER = (0, 200, 200)
+
+    # Valhalla target popup
+    POPUP_VALHALLA_WIDTH = 450
+    POPUP_VALHALLA_HEIGHT = 80
+    POPUP_VALHALLA_BG = (80, 60, 0, 230)
+    POPUP_VALHALLA_BORDER = (255, 200, 100)
+
+    # Heal confirmation popup
+    POPUP_HEAL_WIDTH = 350
+    POPUP_HEAL_HEIGHT = 90
+    POPUP_HEAL_BG = (20, 80, 40, 230)
+    POPUP_HEAL_BORDER = (80, 200, 100)
+
+    # Counter shot / movement shot popup
+    POPUP_SHOT_WIDTH = 400
+    POPUP_SHOT_HEIGHT = 60
+    POPUP_SHOT_BG = (80, 50, 0, 230)
+    POPUP_SHOT_BORDER = (255, 140, 50)
+
+    # Stench choice popup
+    POPUP_STENCH_WIDTH = 380
+    POPUP_STENCH_HEIGHT = 100
+    POPUP_STENCH_BG = (60, 40, 20, 230)
+    POPUP_STENCH_BORDER = (180, 120, 60)
+
+    # Exchange (damage trade) popup
+    POPUP_EXCHANGE_WIDTH = 320
+    POPUP_EXCHANGE_HEIGHT = 115  # Taller for two-line buttons
+    POPUP_EXCHANGE_BG = (80, 60, 20, 230)
+    POPUP_EXCHANGE_BORDER = (255, 180, 80)
+
+    # -------------------------------------------------------------------------
+    # GAME OVER POPUP
+    # -------------------------------------------------------------------------
+    POPUP_GAME_OVER_WIDTH = 400
+    POPUP_GAME_OVER_HEIGHT = 200
+    POPUP_GAME_OVER_BG = (40, 50, 60)
+    POPUP_GAME_OVER_BORDER = (80, 100, 120)
+    POPUP_GAME_OVER_OVERLAY = (0, 0, 0, 200)  # Semi-transparent background
+
+    # -------------------------------------------------------------------------
+    # DICE POPUP (priority phase)
+    # -------------------------------------------------------------------------
+    POPUP_DICE_WIDTH = 420
+    POPUP_DICE_HEIGHT_MELEE = 170    # Height for melee combat (both rolls)
+    POPUP_DICE_HEIGHT_RANGED = 160   # Height for ranged/magic (single roll)
+    POPUP_DICE_Y = 100
+    POPUP_DICE_BG = (40, 40, 50)
+    POPUP_DICE_BORDER = (100, 100, 120)
+
+    # -------------------------------------------------------------------------
+    # PAUSE MENU
+    # -------------------------------------------------------------------------
+    POPUP_PAUSE_WIDTH = 300
+    POPUP_PAUSE_BUTTON_WIDTH = 200
+    POPUP_PAUSE_BUTTON_HEIGHT = 40
+    POPUP_PAUSE_BUTTON_GAP = 15
+    POPUP_PAUSE_BG = (30, 30, 40, 240)
+    POPUP_PAUSE_BORDER = (80, 80, 100)
 
     # -------------------------------------------------------------------------
     # DECK BUILDER

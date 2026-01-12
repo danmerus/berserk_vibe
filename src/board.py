@@ -366,7 +366,7 @@ class Board:
             for card in self.get_flying_cards(player=target.player):
                 if card == target or not card.is_alive or card.webbed:
                     continue
-                if card.tapped and "unlimited_defender" not in card.stats.ability_ids:
+                if card.tapped:
                     continue
                 defenders.append(card)
             return defenders
@@ -377,7 +377,7 @@ class Board:
             for card in self.get_flying_cards(player=target.player):
                 if card == target or not card.is_alive or card.webbed:
                     continue
-                if card.tapped and "unlimited_defender" not in card.stats.ability_ids:
+                if card.tapped:
                     continue
                 defenders.append(card)
             # Ground creatures adjacent to target can also defend
@@ -386,7 +386,7 @@ class Board:
                 card = self.get_card(pos)
                 if card is None or card.player != target.player or card == target or not card.is_alive or card.webbed:
                     continue
-                if card.tapped and "unlimited_defender" not in card.stats.ability_ids:
+                if card.tapped:
                     continue
                 defenders.append(card)
             return defenders
@@ -400,7 +400,7 @@ class Board:
             card = self.get_card(pos)
             if card is None or card.player != target.player or card == target or not card.is_alive or card.webbed:
                 continue
-            if card.tapped and "unlimited_defender" not in card.stats.ability_ids:
+            if card.tapped:
                 continue
             defenders.append(card)
 

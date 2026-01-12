@@ -58,6 +58,14 @@ class MessageType(Enum):
     PING = auto()           # Client → Server: keepalive
     PONG = auto()           # Server → Client: keepalive response
 
+    # Chat
+    CHAT = auto()           # Bidirectional: chat message
+
+    # Draw
+    DRAW_OFFER = auto()     # Client → Server: offer a draw
+    DRAW_ACCEPT = auto()    # Client → Server: accept draw offer
+    DRAW_OFFERED = auto()   # Server → Client: opponent offered draw
+
     # Errors
     ERROR = auto()          # Server → Client: error message
 
@@ -342,4 +350,30 @@ def msg_placement_done(placed_cards: List[Dict[str, Any]]) -> Message:
     return Message(
         type=MessageType.PLACEMENT_DONE,
         payload={'placed_cards': placed_cards}
+    )
+
+
+def msg_chat(text: str, player_name: str = "", player_number: int = 0) -> Message:
+    """Send chat message."""
+    return Message(
+        type=MessageType.CHAT,
+        payload={'text': text, 'player_name': player_name, 'player_number': player_number}
+    )
+
+
+def msg_draw_offer() -> Message:
+    """Offer a draw to opponent."""
+    return Message(type=MessageType.DRAW_OFFER)
+
+
+def msg_draw_accept() -> Message:
+    """Accept a draw offer."""
+    return Message(type=MessageType.DRAW_ACCEPT)
+
+
+def msg_draw_offered(player_number: int) -> Message:
+    """Notify that opponent offered a draw."""
+    return Message(
+        type=MessageType.DRAW_OFFERED,
+        payload={'player_number': player_number}
     )

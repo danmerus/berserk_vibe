@@ -209,6 +209,13 @@ class Renderer:
         # Main menu button rects: (button_id, rect)
         self.menu_buttons: List[Tuple[str, pygame.Rect]] = []
 
+        # Settings nickname input
+        from .text_input import TextInput
+        from .settings import get_nickname
+        self.settings_nickname_input = TextInput(max_length=20)
+        self.settings_nickname_input.value = get_nickname()
+        self.settings_nickname_rect: Optional[pygame.Rect] = None
+
     def is_panel_expanded(self, panel_id: str) -> bool:
         """Check if a specific panel is expanded."""
         if panel_id == 'p1_flyers':
@@ -1174,10 +1181,10 @@ class Renderer:
 
         config = PopupConfig(
             popup_id='counter_shot',
-            width=scaled(400),
-            height=scaled(60),
-            bg_color=(80, 50, 0, 230),
-            border_color=(255, 140, 50),
+            width=scaled(UILayout.POPUP_SHOT_WIDTH),
+            height=scaled(UILayout.POPUP_SHOT_HEIGHT),
+            bg_color=UILayout.POPUP_SHOT_BG,
+            border_color=UILayout.POPUP_SHOT_BORDER,
             title=f"ВЫСТРЕЛ: {attacker.name}",
             title_color=(255, 200, 150),
         )
@@ -1200,10 +1207,10 @@ class Renderer:
 
         config = PopupConfig(
             popup_id='movement_shot',
-            width=scaled(450),
-            height=scaled(95),
-            bg_color=(80, 50, 0, 230),
-            border_color=(255, 140, 50),
+            width=scaled(UILayout.POPUP_SHOT_WIDTH + 50),  # Slightly wider for longer text
+            height=scaled(UILayout.POPUP_SHOT_HEIGHT + 35),
+            bg_color=UILayout.POPUP_SHOT_BG,
+            border_color=UILayout.POPUP_SHOT_BORDER,
             title=f"ВЫСТРЕЛ: {shooter.name}",
             title_color=(255, 200, 150),
         )
@@ -1232,10 +1239,10 @@ class Renderer:
 
         config = PopupConfig(
             popup_id='heal_confirm',
-            width=scaled(350),
-            height=scaled(90),
-            bg_color=(20, 80, 40, 230),
-            border_color=(80, 200, 100),
+            width=scaled(UILayout.POPUP_HEAL_WIDTH),
+            height=scaled(UILayout.POPUP_HEAL_HEIGHT),
+            bg_color=UILayout.POPUP_HEAL_BG,
+            border_color=UILayout.POPUP_HEAL_BORDER,
             title=f"ЛЕЧЕНИЕ: {attacker.name}",
             title_color=(180, 255, 200),
         )
@@ -1274,10 +1281,10 @@ class Renderer:
 
         config = PopupConfig(
             popup_id='stench_choice',
-            width=scaled(380),
-            height=scaled(100),
-            bg_color=(60, 40, 20, 230),
-            border_color=(180, 120, 60),
+            width=scaled(UILayout.POPUP_STENCH_WIDTH),
+            height=scaled(UILayout.POPUP_STENCH_HEIGHT),
+            bg_color=UILayout.POPUP_STENCH_BG,
+            border_color=UILayout.POPUP_STENCH_BORDER,
             title=f"ЗЛОВОНИЕ: {target.name}",
             title_color=(255, 200, 150),
         )
@@ -1317,9 +1324,8 @@ class Renderer:
         attacker_advantage = ctx.get('attacker_advantage', True)
         roll_diff = ctx.get('roll_diff', 0)
 
-        # Calculate damage values
-        atk = attacker.get_effective_attack()
-        def_atk = defender.get_effective_attack()
+        # Tier names for display
+        tier_names = {0: "слабый", 1: "средний", 2: "сильный"}
 
         if attacker_advantage:
             # Attacker chooses - roll_diff is 2 or 4
@@ -1330,54 +1336,74 @@ class Renderer:
                 atk_current_tier = 1  # Medium
                 atk_reduced_tier = 0  # Weak
 
-            current_atk_dmg = atk[atk_current_tier] + game._get_positional_damage_modifier(attacker, atk_current_tier)
-            reduced_atk_dmg = atk[atk_reduced_tier] + game._get_positional_damage_modifier(attacker, atk_reduced_tier)
-            counter_dmg = def_atk[0]  # Weak counter
+            # Full option: deal current tier, receive weak counter
+            full_deal = tier_names[atk_current_tier]
+            full_receive = tier_names[0]  # Weak counter
+            # Reduced option: deal reduced tier, receive nothing
+            reduced_deal = tier_names[atk_reduced_tier]
+            reduced_receive = "промах"
 
             title = "ОБМЕН УДАРАМИ"
-            full_btn_text = f"{current_atk_dmg} / -{counter_dmg}"
-            reduce_btn_text = f"{reduced_atk_dmg} / 0"
+            full_line1 = f"Нанести {full_deal}"
+            full_line2 = f"Получить {full_receive}"
+            reduced_line1 = f"Нанести {reduced_deal}"
+            reduced_line2 = f"Получить {reduced_receive}"
         else:
             # Defender chooses - roll_diff is -4
-            atk_dmg = atk[0]  # Weak attack
             def_current_tier = 1  # Medium counter
             def_reduced_tier = 0  # Weak counter
 
-            current_def_dmg = def_atk[def_current_tier] + game._get_positional_damage_modifier(defender, def_current_tier)
-            reduced_def_dmg = def_atk[def_reduced_tier] + game._get_positional_damage_modifier(defender, def_reduced_tier)
+            # Full option: receive weak attack, counter with current tier
+            full_receive = tier_names[0]  # Weak attack
+            full_counter = tier_names[def_current_tier]
+            # Reduced option: receive nothing, counter with reduced tier
+            reduced_receive = "промах"
+            reduced_counter = tier_names[def_reduced_tier]
 
             title = "ОБМЕН УДАРАМИ"
-            full_btn_text = f"-{atk_dmg} / {current_def_dmg}"
-            reduce_btn_text = f"0 / {reduced_def_dmg}"
+            full_line1 = f"Получить {full_receive}"
+            full_line2 = f"Контратака {full_counter}"
+            reduced_line1 = f"Получить {reduced_receive}"
+            reduced_line2 = f"Контратака {reduced_counter}"
 
         config = PopupConfig(
             popup_id='exchange',
-            width=scaled(320),
-            height=scaled(100),
-            bg_color=(80, 60, 20, 230),
-            border_color=(255, 180, 80),
+            width=scaled(UILayout.POPUP_EXCHANGE_WIDTH),
+            height=scaled(UILayout.POPUP_EXCHANGE_HEIGHT),
+            bg_color=UILayout.POPUP_EXCHANGE_BG,
+            border_color=UILayout.POPUP_EXCHANGE_BORDER,
             title=title,
             title_color=(255, 220, 150),
         )
 
         x, y, content_y = self.draw_popup_base(config)
 
-        # Buttons with damage values - positioned with explicit margins
-        btn_width, btn_height = scaled(130), scaled(36)
-        margin = scaled(15)
-        btn_y = content_y + scaled(10)
+        # Two-line buttons with damage descriptions
+        btn_width, btn_height = scaled(145), scaled(50)
+        margin = scaled(10)
+        btn_y = content_y + scaled(5)
 
         # Full button on left (brown = attack with counter)
         full_x = x + margin
-        full_rect = self.draw_popup_button(
-            full_x, btn_y,
-            btn_width, btn_height, full_btn_text, (140, 80, 40), (220, 140, 80))
+        full_rect = pygame.Rect(full_x, btn_y, btn_width, btn_height)
+        pygame.draw.rect(self.screen, (140, 80, 40), full_rect)
+        pygame.draw.rect(self.screen, (220, 140, 80), full_rect, 2)
+        # Two lines of text
+        line1_surf = self.font_small.render(full_line1, True, (255, 255, 255))
+        line2_surf = self.font_small.render(full_line2, True, (255, 200, 200))
+        self.screen.blit(line1_surf, (full_x + (btn_width - line1_surf.get_width()) // 2, btn_y + scaled(8)))
+        self.screen.blit(line2_surf, (full_x + (btn_width - line2_surf.get_width()) // 2, btn_y + scaled(28)))
 
         # Reduce button on right (green = safe attack)
         reduce_x = x + config.width - margin - btn_width
-        reduce_rect = self.draw_popup_button(
-            reduce_x, btn_y,
-            btn_width, btn_height, reduce_btn_text, (40, 100, 60), (80, 180, 100))
+        reduce_rect = pygame.Rect(reduce_x, btn_y, btn_width, btn_height)
+        pygame.draw.rect(self.screen, (40, 100, 60), reduce_rect)
+        pygame.draw.rect(self.screen, (80, 180, 100), reduce_rect, 2)
+        # Two lines of text
+        line1_surf = self.font_small.render(reduced_line1, True, (255, 255, 255))
+        line2_surf = self.font_small.render(reduced_line2, True, (200, 255, 200))
+        self.screen.blit(line1_surf, (reduce_x + (btn_width - line1_surf.get_width()) // 2, btn_y + scaled(8)))
+        self.screen.blit(line2_surf, (reduce_x + (btn_width - line2_surf.get_width()) // 2, btn_y + scaled(28)))
 
         self.exchange_buttons = [('full', full_rect), ('reduce', reduce_rect)]
 
@@ -1395,10 +1421,10 @@ class Renderer:
 
         config = PopupConfig(
             popup_id='valhalla',
-            width=scaled(450),
-            height=scaled(80),
-            bg_color=(80, 60, 0, 230),
-            border_color=(255, 200, 100),
+            width=scaled(UILayout.POPUP_VALHALLA_WIDTH),
+            height=scaled(UILayout.POPUP_VALHALLA_HEIGHT),
+            bg_color=UILayout.POPUP_VALHALLA_BG,
+            border_color=UILayout.POPUP_VALHALLA_BORDER,
             title=f"ВАЛЬХАЛЛА: {dead_card.name}",
             title_color=(255, 220, 150),
         )
@@ -1426,10 +1452,10 @@ class Renderer:
 
         config = PopupConfig(
             popup_id='defender',
-            width=scaled(500),
-            height=scaled(100),
-            bg_color=(0, 80, 80, 230),
-            border_color=(0, 200, 200),
+            width=scaled(UILayout.POPUP_DEFENDER_WIDTH),
+            height=scaled(UILayout.POPUP_DEFENDER_HEIGHT),
+            bg_color=UILayout.POPUP_DEFENDER_BG,
+            border_color=UILayout.POPUP_DEFENDER_BORDER,
             title=f"ИГРОК {defending_player}: ВЫБОР ЗАЩИТНИКА",
         )
 
@@ -2771,6 +2797,66 @@ class Renderer:
         self.dice_popup_card = None
         self.dice_option_buttons = []
 
+    def _draw_dice_row(self, popup_x: int, y_offset: int, card: Card, roll: int,
+                        modifier: int, bonus: int, btn_prefix: str):
+        """Draw a single dice row with name, dice value, and modification buttons.
+
+        Args:
+            popup_x: X position of popup
+            y_offset: Y position for this row
+            card: The card (attacker or defender)
+            roll: Base dice roll value
+            modifier: Luck modifier applied
+            bonus: Ability bonus (OvA/OvZ)
+            btn_prefix: Prefix for button IDs ('atk' or 'def')
+        """
+        color = COLOR_PLAYER1 if card.player == 1 else COLOR_PLAYER2
+        total = roll + modifier + bonus
+
+        # Draw card name
+        name_surface = self.font_medium.render(f"{card.name}:", True, color)
+        self.screen.blit(name_surface, (popup_x + 15, y_offset))
+
+        # Draw dice value
+        dice_x = popup_x + 170
+        bonus_str = f"+{bonus}" if bonus > 0 else ""
+
+        if modifier != 0:
+            # Show: [roll+bonus] -> [total] with color indicating modification
+            orig_text = f"[{roll}{bonus_str}]"
+            orig_surface = self.font_medium.render(orig_text, True, (150, 150, 150))
+            self.screen.blit(orig_surface, (dice_x, y_offset))
+
+            arrow_surface = self.font_medium.render(" → ", True, COLOR_TEXT)
+            self.screen.blit(arrow_surface, (dice_x + orig_surface.get_width(), y_offset))
+
+            mod_color = (100, 255, 100) if modifier > 0 else (255, 100, 100)
+            mod_text = f"[{total}]"
+            mod_surface = self.font_medium.render(mod_text, True, mod_color)
+            self.screen.blit(mod_surface, (dice_x + orig_surface.get_width() + arrow_surface.get_width(), y_offset))
+        else:
+            # Show roll with bonus or just roll
+            if bonus > 0:
+                dice_text = f"[{roll}+{bonus}={roll + bonus}]"
+            else:
+                dice_text = f"[{roll}]"
+            dice_surface = self.font_medium.render(dice_text, True, COLOR_TEXT)
+            self.screen.blit(dice_surface, (dice_x, y_offset))
+
+        # Draw modification buttons
+        btn_x = popup_x + 290
+        for suffix, label, color in [('_plus1', '+1', (80, 140, 80)),
+                                     ('_minus1', '-1', (140, 80, 80)),
+                                     ('_reroll', 'Re', (80, 80, 140))]:
+            btn_rect = pygame.Rect(btn_x, y_offset - 3, 48, 26)
+            pygame.draw.rect(self.screen, color, btn_rect)
+            pygame.draw.rect(self.screen, COLOR_TEXT, btn_rect, 1)
+            btn_text = self.font_small.render(label, True, COLOR_TEXT)
+            self.screen.blit(btn_text, (btn_rect.x + (48 - btn_text.get_width()) // 2,
+                                        btn_rect.y + (26 - btn_text.get_height()) // 2))
+            self.dice_option_buttons.append((f'{btn_prefix}{suffix}', btn_rect))
+            btn_x += 52
+
     def draw_dice_popup(self, game: Game):
         """Draw dice modification popup when an instant card is selected during priority."""
         if not self.dice_popup_open or not game.pending_dice_roll:
@@ -2780,24 +2866,24 @@ class Renderer:
         attacker = game.board.get_card_by_id(dice.attacker_id)
         if not attacker:
             return
-        # For ranged/magic attacks, there's no defender - use target_id instead
+
         is_single_roll = dice.type in ('ranged', 'magic')
         defender = game.board.get_card_by_id(dice.defender_id) if dice.defender_id and not is_single_roll else None
         target = game.board.get_card_by_id(dice.target_id) if dice.target_id and is_single_roll else None
 
-        # Popup dimensions
-        popup_width = 420
-        popup_height = 160 if is_single_roll else 220  # Smaller popup for ranged/magic (no defender row)
+        # Popup dimensions and position
+        popup_width = scaled(UILayout.POPUP_DICE_WIDTH)
+        popup_height = scaled(UILayout.POPUP_DICE_HEIGHT_RANGED if is_single_roll else UILayout.POPUP_DICE_HEIGHT_MELEE)
         popup_x = (WINDOW_WIDTH - popup_width) // 2
-        popup_y = 100
+        popup_y = scaled(UILayout.POPUP_DICE_Y)
 
         # Draw popup background
         bg_surface = pygame.Surface((popup_width, popup_height), pygame.SRCALPHA)
-        bg_surface.fill((40, 35, 60, 240))
+        bg_surface.fill(UILayout.POPUP_DICE_BG + (240,))
         self.screen.blit(bg_surface, (popup_x, popup_y))
-        pygame.draw.rect(self.screen, (100, 80, 140), (popup_x, popup_y, popup_width, popup_height), 3)
+        pygame.draw.rect(self.screen, UILayout.POPUP_DICE_BORDER, (popup_x, popup_y, popup_width, popup_height), 3)
 
-        # Title - different text for ranged/magic attacks
+        # Title
         if dice.type == 'magic':
             title_text = "Удача - изменить бросок (магия)"
         elif dice.type == 'ranged':
@@ -2808,121 +2894,21 @@ class Renderer:
         title = self.font_medium.render(title_text, True, (255, 220, 100))
         self.screen.blit(title, (popup_x + (popup_width - title.get_width()) // 2, popup_y + 10))
 
-        # Clear dice option buttons
         self.dice_option_buttons = []
-
         y_offset = popup_y + 50
 
         # Attacker dice row
-        atk_color = COLOR_PLAYER1 if attacker.player == 1 else COLOR_PLAYER2
-        atk_mod = dice.atk_modifier  # Luck modifier
-        atk_bonus = dice.atk_bonus   # Ability bonus (OvA)
-        atk_roll = dice.atk_roll
-        atk_total = atk_roll + atk_mod + atk_bonus
-
-        # Show name and original roll
-        atk_name_surface = self.font_medium.render(f"{attacker.name}:", True, atk_color)
-        self.screen.blit(atk_name_surface, (popup_x + 15, y_offset))
-
-        # Show dice value with bonus and luck modification
-        dice_x = popup_x + 140
-        # Format: [roll+bonus] or [roll+bonus] -> [modified] if luck used
-        bonus_str = f"+{atk_bonus}" if atk_bonus > 0 else ""
-
-        if atk_mod != 0:
-            # Show: [roll+bonus] -> [total] with color
-            orig_text = f"[{atk_roll}{bonus_str}]"
-            orig_surface = self.font_medium.render(orig_text, True, (150, 150, 150))
-            self.screen.blit(orig_surface, (dice_x, y_offset))
-
-            arrow_surface = self.font_medium.render(" → ", True, COLOR_TEXT)
-            self.screen.blit(arrow_surface, (dice_x + orig_surface.get_width(), y_offset))
-
-            mod_color = (100, 255, 100) if atk_mod > 0 else (255, 100, 100)
-            mod_text = f"[{atk_total}]"
-            mod_surface = self.font_medium.render(mod_text, True, mod_color)
-            self.screen.blit(mod_surface, (dice_x + orig_surface.get_width() + arrow_surface.get_width(), y_offset))
-        else:
-            # Show roll with bonus: [roll+bonus=total] or just [roll] if no bonus
-            if atk_bonus > 0:
-                dice_text = f"[{atk_roll}+{atk_bonus}={atk_roll + atk_bonus}]"
-            else:
-                dice_text = f"[{atk_roll}]"
-            dice_surface = self.font_medium.render(dice_text, True, COLOR_TEXT)
-            self.screen.blit(dice_surface, (dice_x, y_offset))
-
-        # Attacker dice buttons
-        btn_x = popup_x + 260
-        for opt_id, label, color in [('atk_plus1', '+1', (80, 140, 80)),
-                                      ('atk_minus1', '-1', (140, 80, 80)),
-                                      ('atk_reroll', 'Re', (80, 80, 140))]:
-            btn_rect = pygame.Rect(btn_x, y_offset - 3, 48, 26)
-            pygame.draw.rect(self.screen, color, btn_rect)
-            pygame.draw.rect(self.screen, COLOR_TEXT, btn_rect, 1)
-            btn_text = self.font_small.render(label, True, COLOR_TEXT)
-            self.screen.blit(btn_text, (btn_rect.x + (48 - btn_text.get_width()) // 2,
-                                        btn_rect.y + (26 - btn_text.get_height()) // 2))
-            self.dice_option_buttons.append((opt_id, btn_rect))
-            btn_x += 52
-
+        self._draw_dice_row(popup_x, y_offset, attacker,
+                           dice.atk_roll, dice.atk_modifier, dice.atk_bonus, 'atk')
         y_offset += 55
 
-        # Defender dice row (only for combat, not ranged/magic attacks, and only if defender rolled)
-        # def_roll is 0 when attacking a tapped creature (no counter-attack)
+        # Defender dice row (only for melee combat with active defender)
         if not is_single_roll and defender and dice.def_roll > 0:
-            def_color = COLOR_PLAYER1 if defender.player == 1 else COLOR_PLAYER2
-            def_mod = dice.def_modifier  # Luck modifier
-            def_bonus = dice.def_bonus   # Ability bonus (OvZ)
-            def_roll = dice.def_roll
-            def_total = def_roll + def_mod + def_bonus
-
-            # Show name and original roll
-            def_name_surface = self.font_medium.render(f"{defender.name}:", True, def_color)
-            self.screen.blit(def_name_surface, (popup_x + 15, y_offset))
-
-            # Show dice value with bonus and luck modification
-            dice_x = popup_x + 140
-            bonus_str = f"+{def_bonus}" if def_bonus > 0 else ""
-
-            if def_mod != 0:
-                # Show: [roll+bonus] -> [total] with color
-                orig_text = f"[{def_roll}{bonus_str}]"
-                orig_surface = self.font_medium.render(orig_text, True, (150, 150, 150))
-                self.screen.blit(orig_surface, (dice_x, y_offset))
-
-                arrow_surface = self.font_medium.render(" → ", True, COLOR_TEXT)
-                self.screen.blit(arrow_surface, (dice_x + orig_surface.get_width(), y_offset))
-
-                mod_color = (100, 255, 100) if def_mod > 0 else (255, 100, 100)
-                mod_text = f"[{def_total}]"
-                mod_surface = self.font_medium.render(mod_text, True, mod_color)
-                self.screen.blit(mod_surface, (dice_x + orig_surface.get_width() + arrow_surface.get_width(), y_offset))
-            else:
-                # Show roll with bonus: [roll+bonus=total] or just [roll] if no bonus
-                if def_bonus > 0:
-                    dice_text = f"[{def_roll}+{def_bonus}={def_roll + def_bonus}]"
-                else:
-                    dice_text = f"[{def_roll}]"
-                dice_surface = self.font_medium.render(dice_text, True, COLOR_TEXT)
-                self.screen.blit(dice_surface, (dice_x, y_offset))
-
-            # Defender dice buttons
-            btn_x = popup_x + 260
-            for opt_id, label, color in [('def_plus1', '+1', (80, 140, 80)),
-                                          ('def_minus1', '-1', (140, 80, 80)),
-                                          ('def_reroll', 'Re', (80, 80, 140))]:
-                btn_rect = pygame.Rect(btn_x, y_offset - 3, 48, 26)
-                pygame.draw.rect(self.screen, color, btn_rect)
-                pygame.draw.rect(self.screen, COLOR_TEXT, btn_rect, 1)
-                btn_text = self.font_small.render(label, True, COLOR_TEXT)
-                self.screen.blit(btn_text, (btn_rect.x + (48 - btn_text.get_width()) // 2,
-                                            btn_rect.y + (26 - btn_text.get_height()) // 2))
-                self.dice_option_buttons.append((opt_id, btn_rect))
-                btn_x += 52
-
+            self._draw_dice_row(popup_x, y_offset, defender,
+                               dice.def_roll, dice.def_modifier, dice.def_bonus, 'def')
             y_offset += 55
         elif is_single_roll and target:
-            # Show target info for ranged/magic attacks (read-only, no dice to modify)
+            # Show target info for ranged/magic attacks (read-only)
             target_color = COLOR_PLAYER1 if target.player == 1 else COLOR_PLAYER2
             target_name_surface = self.font_medium.render(f"Цель: {target.name}", True, target_color)
             self.screen.blit(target_name_surface, (popup_x + 15, y_offset))
@@ -3565,18 +3551,18 @@ class Renderer:
 
         # Semi-transparent overlay
         overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
-        overlay.fill((0, 0, 0, 200))
+        overlay.fill(UILayout.POPUP_GAME_OVER_OVERLAY)
         self.screen.blit(overlay, (0, 0))
 
         # Popup box
-        popup_w = scaled(400)
-        popup_h = scaled(200)
+        popup_w = scaled(UILayout.POPUP_GAME_OVER_WIDTH)
+        popup_h = scaled(UILayout.POPUP_GAME_OVER_HEIGHT)
         popup_x = (WINDOW_WIDTH - popup_w) // 2
         popup_y = (WINDOW_HEIGHT - popup_h) // 2
 
         # Background
-        pygame.draw.rect(self.screen, (40, 50, 60), (popup_x, popup_y, popup_w, popup_h))
-        pygame.draw.rect(self.screen, (80, 100, 120), (popup_x, popup_y, popup_w, popup_h), 3)
+        pygame.draw.rect(self.screen, UILayout.POPUP_GAME_OVER_BG, (popup_x, popup_y, popup_w, popup_h))
+        pygame.draw.rect(self.screen, UILayout.POPUP_GAME_OVER_BORDER, (popup_x, popup_y, popup_w, popup_h), 3)
 
         # Winner text
         if self.game_over_winner == 0:
@@ -3612,11 +3598,12 @@ class Renderer:
         else:
             congrats_y = popup_y + scaled(80)
 
-        # Congratulations text
-        congrats_text = "Поздравляем!"
-        congrats_surface = self.font_medium.render(congrats_text, True, COLOR_TEXT)
-        congrats_x = popup_x + (popup_w - congrats_surface.get_width()) // 2
-        self.screen.blit(congrats_surface, (congrats_x, congrats_y))
+        # Congratulations text (skip for draws)
+        if self.game_over_winner != 0:
+            congrats_text = "Поздравляем!"
+            congrats_surface = self.font_medium.render(congrats_text, True, COLOR_TEXT)
+            congrats_x = popup_x + (popup_w - congrats_surface.get_width()) // 2
+            self.screen.blit(congrats_surface, (congrats_x, congrats_y))
 
         # OK button
         btn_w = scaled(150)
@@ -3795,6 +3782,23 @@ class Renderer:
         fullscreen_text = self.font_small.render("F11 - переключить полноэкранный режим", True, (150, 150, 160))
         self.screen.blit(fullscreen_text, (scaled(100), scaled(340)))
 
+        # Nickname section
+        from .text_input import draw_text_input_field
+        nickname_label = self.font_medium.render("Никнейм (для сетевой игры):", True, COLOR_TEXT)
+        self.screen.blit(nickname_label, (scaled(100), scaled(400)))
+
+        # Nickname input field
+        input_width = scaled(300)
+        input_height = scaled(36)
+        self.settings_nickname_rect = draw_text_input_field(
+            self.screen, self.font_medium, self.settings_nickname_input,
+            scaled(100), scaled(440), input_width, input_height,
+            bg_color=(50, 50, 60),
+            bg_active_color=(60, 60, 70),
+            border_color=(100, 100, 110),
+            border_active_color=(140, 120, 160),
+        )
+
         # Back button
         back_btn_width = scaled(180)
         back_btn_height = scaled(45)
@@ -3841,7 +3845,7 @@ class Renderer:
 
         # Semi-transparent overlay
         overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
-        overlay.fill((0, 0, 0, 180))
+        overlay.fill(UILayout.POPUP_PAUSE_BG)
         self.screen.blit(overlay, (0, 0))
 
         # Menu panel
@@ -3852,7 +3856,7 @@ class Renderer:
         panel_rect = pygame.Rect(panel_x, panel_y, panel_width, panel_height)
 
         pygame.draw.rect(self.screen, (40, 35, 50), panel_rect)
-        pygame.draw.rect(self.screen, (100, 80, 120), panel_rect, 3)
+        pygame.draw.rect(self.screen, UILayout.POPUP_PAUSE_BORDER, panel_rect, 3)
 
         # Title
         title_font = pygame.font.SysFont('arial', scaled(28))

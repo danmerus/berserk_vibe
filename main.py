@@ -27,6 +27,7 @@ from src.ui_state import GameClient
 from src.match import MatchServer, LocalMatchClient
 from src.network_ui import NetworkUI, LobbyState
 from src.card_database import create_starter_deck
+from src.chat import ChatUI
 
 
 def create_local_game_state():
@@ -651,6 +652,13 @@ def main():
     network_game = None  # Game instance for network play
     network_player = 0  # Which player we are (1 or 2)
     network_game_client = None  # GameClient for network play
+    network_chat = None  # ChatUI for network game
+
+    # Draw offer state for network games
+    draw_offered_by_us = False  # We offered a draw
+    draw_offered_by_opponent = False  # Opponent offered a draw
+    draw_button_rect = None  # For click detection
+    draw_button_flash_timer = 0  # For flashing effect when opponent offers
 
     # Pause menu state
     show_pause_menu = False
@@ -692,11 +700,16 @@ def main():
                     renderer.handle_resize(screen)
 
             elif event.type == pygame.TEXTINPUT:
-                if app_state in (AppState.DECK_BUILDER, AppState.DECK_SELECT) and deck_builder_renderer:
+                if app_state == AppState.SETTINGS:
+                    if renderer.settings_nickname_input.active:
+                        renderer.settings_nickname_input.handle_event(event)
+                elif app_state in (AppState.DECK_BUILDER, AppState.DECK_SELECT) and deck_builder_renderer:
                     if deck_builder_renderer.text_input_active:
                         deck_builder_renderer.handle_text_input(event)
                 elif app_state == AppState.NETWORK_LOBBY and network_ui:
                     network_ui.handle_text_input(event)
+                elif app_state == AppState.NETWORK_GAME and network_chat:
+                    network_chat.handle_event(event)
 
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_F11:
@@ -706,6 +719,19 @@ def main():
                     else:
                         screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.RESIZABLE)
                     renderer.handle_resize(screen)
+
+                elif app_state == AppState.SETTINGS:
+                    if renderer.settings_nickname_input.active:
+                        result = renderer.settings_nickname_input.handle_event(event)
+                        if result == 'submit' or result == 'cancel':
+                            renderer.settings_nickname_input.deactivate()
+                            from src.settings import set_nickname
+                            set_nickname(renderer.settings_nickname_input.value)
+                    elif event.key == pygame.K_ESCAPE:
+                        # Save and go back to menu
+                        from src.settings import set_nickname
+                        set_nickname(renderer.settings_nickname_input.value)
+                        app_state = AppState.MENU
 
                 elif app_state == AppState.NETWORK_LOBBY and network_ui:
                     if event.key == pygame.K_ESCAPE:
@@ -743,9 +769,15 @@ def main():
                         send_command(match_client, renderer, cmd_confirm(player, False))
 
                 elif app_state == AppState.NETWORK_GAME and network_game and network_game_client:
+                    # Let chat handle event first if focused
+                    if network_chat and network_chat.is_input_focused():
+                        if network_chat.handle_event(event):
+                            continue
                     if event.key == pygame.K_ESCAPE:
                         if show_pause_menu:
                             show_pause_menu = False
+                        elif network_chat and network_chat.is_input_focused():
+                            network_chat.text_input.deactivate()
                         elif renderer.popup_card:
                             renderer.hide_popup()
                         elif renderer.dice_popup_open:
@@ -808,8 +840,26 @@ def main():
                 elif app_state == AppState.NETWORK_GAME:
                     renderer.stop_popup_drag()
                     renderer.stop_log_scrollbar_drag()
+                    # Handle chat mouse up for drag selection
+                    if network_chat:
+                        gx, gy = renderer.screen_to_game_coords(*event.pos)
+                        chat_event = pygame.event.Event(event.type, pos=(gx, gy), button=event.button)
+                        network_chat.handle_event(chat_event)
+                elif app_state == AppState.SETTINGS:
+                    # Handle mouse up for nickname input drag selection
+                    if renderer.settings_nickname_input.active and renderer.settings_nickname_rect:
+                        gx, gy = renderer.screen_to_game_coords(*event.pos)
+                        renderer.settings_nickname_input.handle_mouse_event(
+                            pygame.event.Event(event.type, pos=(gx, gy), button=event.button),
+                            renderer.settings_nickname_rect, renderer.font_medium
+                        )
                 elif app_state in (AppState.DECK_BUILDER, AppState.DECK_SELECT) and deck_builder_renderer:
                     deck_builder_renderer.stop_scrollbar_drag()
+                    # Handle mouse up for text input drag selection
+                    if deck_builder_renderer.text_input_active:
+                        gx, gy = renderer.screen_to_game_coords(*event.pos)
+                        mouse_event = pygame.event.Event(event.type, pos=(gx, gy), button=event.button)
+                        deck_builder_renderer.handle_text_mouse_event(mouse_event)
                 elif app_state == AppState.SQUAD_PLACE:
                     # Get from network prep or local state
                     if network_prep_state and network_prep_state.get('placement_state'):
@@ -837,12 +887,26 @@ def main():
                         renderer.drag_popup(gx, gy)
                     elif renderer.log_scrollbar_dragging:
                         renderer.drag_log_scrollbar(gy)
+                    if network_chat:
+                        # Always pass motion to chat for drag selection
+                        network_chat.handle_event(pygame.event.Event(event.type, pos=(gx, gy), rel=event.rel, buttons=event.buttons))
                 elif app_state == AppState.NETWORK_LOBBY and network_ui:
                     # Create event with game coords for text input
                     mouse_event = pygame.event.Event(event.type, pos=(gx, gy), rel=event.rel, buttons=event.buttons)
                     network_ui.handle_mouse_event(mouse_event)
+                elif app_state == AppState.SETTINGS:
+                    # Handle drag selection for nickname input
+                    if renderer.settings_nickname_input.active and renderer.settings_nickname_rect:
+                        renderer.settings_nickname_input.handle_mouse_event(
+                            pygame.event.Event(event.type, pos=(gx, gy), rel=event.rel, buttons=event.buttons),
+                            renderer.settings_nickname_rect, renderer.font_medium
+                        )
                 elif app_state in (AppState.DECK_BUILDER, AppState.DECK_SELECT) and deck_builder_renderer:
-                    if deck_builder_renderer.dragging_scrollbar:
+                    if deck_builder_renderer.text_input_active:
+                        # Handle drag selection for text input
+                        mouse_event = pygame.event.Event(event.type, pos=(gx, gy), rel=event.rel, buttons=event.buttons)
+                        deck_builder_renderer.handle_text_mouse_event(mouse_event)
+                    elif deck_builder_renderer.dragging_scrollbar:
                         deck_builder_renderer.drag_scrollbar(gy)
 
             elif event.type == pygame.MOUSEWHEEL:
@@ -861,8 +925,11 @@ def main():
                     else:
                         renderer.scroll_log(-event.y, game)
                 elif app_state == AppState.NETWORK_GAME and network_game and network_game_client:
+                    # Check if chat wants the scroll event
+                    if network_chat and network_chat.handle_event(event):
+                        pass  # Chat consumed it
                     # Side panel scroll
-                    if mx < 200 and renderer.expanded_panel_p2:
+                    elif mx < 200 and renderer.expanded_panel_p2:
                         renderer.scroll_side_panel(event.y, f'p2_{renderer.expanded_panel_p2}')
                     elif 800 < mx < 990 and renderer.expanded_panel_p1:
                         renderer.scroll_side_panel(event.y, f'p1_{renderer.expanded_panel_p1}')
@@ -941,13 +1008,40 @@ def main():
 
                             # Callback when game actually starts (server has both placements)
                             def on_network_game_start(player: int, snapshot: dict):
-                                nonlocal app_state, network_game, network_player, network_game_client, network_client, network_prep_state
+                                nonlocal app_state, network_game, network_player, network_game_client, network_client, network_prep_state, network_chat
+                                nonlocal draw_offered_by_us, draw_offered_by_opponent, draw_button_flash_timer
                                 network_player = player
                                 network_game = Game.from_dict(snapshot)
                                 network_game_client = GameClient(network_game, player)
                                 # Set network_client now that game is starting
                                 network_client = network_ui.client
                                 network_prep_state = None
+                                # Create chat UI with position from constants
+                                from src.constants import scaled, UILayout
+                                network_chat = ChatUI()
+                                network_chat.x = scaled(UILayout.CHAT_X)
+                                network_chat.y = scaled(UILayout.CHAT_Y)
+                                network_chat.width = scaled(UILayout.CHAT_WIDTH)
+                                network_chat.height = scaled(UILayout.CHAT_HEIGHT)
+                                network_chat.input_height = scaled(UILayout.CHAT_INPUT_HEIGHT)
+                                network_chat.set_fonts(renderer.font_medium, renderer.font_small)
+                                network_chat.my_player_number = network_player
+                                network_chat.on_send = lambda text: network_client.send_chat(text) if network_client else None
+                                # Set up chat and draw callbacks
+                                if network_client:
+                                    network_client.on_chat = lambda name, text, pnum: network_chat.add_message(name, text, pnum)
+
+                                    def on_draw_offered(pnum):
+                                        nonlocal draw_offered_by_opponent, draw_button_flash_timer
+                                        print(f"[DEBUG] Draw offered by player {pnum}")
+                                        draw_offered_by_opponent = True
+                                        draw_button_flash_timer = 120  # Flash for 2 seconds at 60fps
+                                    network_client.on_draw_offered = on_draw_offered
+
+                                # Reset draw state
+                                draw_offered_by_us = False
+                                draw_offered_by_opponent = False
+                                draw_button_flash_timer = 0
                                 app_state = AppState.NETWORK_GAME
 
                             # Set up update callback for visual effects
@@ -980,8 +1074,29 @@ def main():
 
                     # Settings screen
                     elif app_state == AppState.SETTINGS:
+                        # Check if clicking on nickname input
+                        if (renderer.settings_nickname_rect and
+                            renderer.settings_nickname_rect.collidepoint(mx, my)):
+                            if not renderer.settings_nickname_input.active:
+                                renderer.settings_nickname_input.activate(renderer.settings_nickname_input.value)
+                            renderer.settings_nickname_input.handle_mouse_event(
+                                pygame.event.Event(event.type, pos=(mx, my), button=event.button),
+                                renderer.settings_nickname_rect, renderer.font_medium
+                            )
+                        else:
+                            # Clicked outside input - deactivate and save
+                            if renderer.settings_nickname_input.active:
+                                renderer.settings_nickname_input.deactivate()
+                                from src.settings import set_nickname
+                                set_nickname(renderer.settings_nickname_input.value)
+
                         btn = renderer.get_clicked_settings_button(mx, my)
                         if btn == 'back':
+                            # Save nickname when leaving settings
+                            if renderer.settings_nickname_input.active:
+                                renderer.settings_nickname_input.deactivate()
+                            from src.settings import set_nickname
+                            set_nickname(renderer.settings_nickname_input.value)
                             app_state = AppState.MENU
                         elif btn and btn.startswith('res_'):
                             # Parse resolution from button id (res_WIDTH_HEIGHT)
@@ -999,16 +1114,18 @@ def main():
 
                     # Network lobby
                     elif app_state == AppState.NETWORK_LOBBY and network_ui:
-                        # Handle mouse for text input cursor/selection
-                        mouse_event = pygame.event.Event(event.type, pos=(mx, my), button=event.button)
-                        network_ui.handle_mouse_event(mouse_event)
-                        # Handle button clicks
+                        # Handle button clicks first (activates input fields)
                         action = network_ui.handle_click(mx, my)
+                        # Process action first to activate input field
                         if action:
                             result = network_ui.process_action(action)
                             if result == 'back':
                                 network_ui = None
                                 app_state = AppState.MENU
+                                continue
+                        # Then handle mouse for text input cursor/selection
+                        mouse_event = pygame.event.Event(event.type, pos=(mx, my), button=event.button)
+                        network_ui.handle_mouse_event(mouse_event)
 
                     # Deck builder / Deck select (shared logic)
                     elif app_state in (AppState.DECK_BUILDER, AppState.DECK_SELECT) and deck_builder_renderer:
@@ -1020,7 +1137,9 @@ def main():
                                 deck_builder.load(deck_path)
                                 deck_builder_renderer.hide_load_popup()
                         elif deck_builder_renderer.text_input_active:
-                            pass
+                            # Handle mouse events for text input
+                            mouse_event = pygame.event.Event(event.type, pos=(mx, my), button=event.button)
+                            deck_builder_renderer.handle_text_mouse_event(mouse_event)
                         elif deck_builder_renderer.show_confirm_popup:
                             choice = deck_builder_renderer.get_clicked_confirm_button(mx, my)
                             if choice:
@@ -1279,6 +1398,30 @@ def main():
 
                     # Network game state
                     elif app_state == AppState.NETWORK_GAME and network_game and network_game_client:
+                        # Check chat click first (convert to game coords)
+                        if network_chat:
+                            chat_event = pygame.event.Event(event.type, pos=(mx, my), button=event.button)
+                            if network_chat.handle_event(chat_event):
+                                pass  # Chat consumed the event
+                                continue
+
+                        # Check draw button click
+                        if draw_button_rect and draw_button_rect.collidepoint(mx, my):
+                            if draw_offered_by_opponent:
+                                # Accept the draw
+                                if network_client:
+                                    print(f"[DEBUG] Accepting draw, client state: {network_client.state}")
+                                    network_client.send_draw_accept()
+                            elif not draw_offered_by_us:
+                                # Offer a draw
+                                if network_client:
+                                    print(f"[DEBUG] Offering draw, client state: {network_client.state}")
+                                    network_client.send_draw_offer()
+                                    draw_offered_by_us = True
+                                else:
+                                    print("[DEBUG] No network_client!")
+                            continue
+
                         if show_pause_menu:
                             # Handle pause menu clicks
                             btn = renderer.get_clicked_pause_button(mx, my)
@@ -1304,6 +1447,12 @@ def main():
                                 network_client = None
                                 network_player = 0
                                 network_ui = None
+                                network_chat = None
+                                # Reset draw state
+                                draw_offered_by_us = False
+                                draw_offered_by_opponent = False
+                                draw_button_flash_timer = 0
+                                draw_button_rect = None
                                 app_state = AppState.MENU
                         elif renderer.popup_card:
                             renderer.hide_popup()
@@ -1479,8 +1628,62 @@ def main():
                         p1_name = network_ui.opponent_name
                         p2_name = network_ui.player_name
                 renderer.show_game_over_popup(winner if winner is not None else 0, p1_name, p2_name)
-            # Draw game, skip flip if pause menu will be drawn
-            renderer.draw(network_game, dt, network_game_client.ui, skip_flip=show_pause_menu)
+            # Draw game, skip flip if pause menu or chat needs to be drawn
+            has_chat = network_chat is not None
+            renderer.draw(network_game, dt, network_game_client.ui, skip_flip=show_pause_menu or has_chat)
+            # Draw chat on the left side
+            if network_chat:
+                from src.constants import scaled, UILayout
+                network_chat.x = scaled(UILayout.CHAT_X)
+                network_chat.y = scaled(UILayout.CHAT_Y)
+                network_chat.width = scaled(UILayout.CHAT_WIDTH)
+                network_chat.height = scaled(UILayout.CHAT_HEIGHT)
+                network_chat.input_height = scaled(UILayout.CHAT_INPUT_HEIGHT)
+                network_chat.draw(renderer.screen)
+
+                # Draw the draw offer button below chat
+                btn_x = scaled(UILayout.CHAT_X)
+                btn_y = scaled(UILayout.CHAT_Y) + scaled(UILayout.CHAT_HEIGHT) + scaled(UILayout.DRAW_BUTTON_OFFSET_Y)
+                btn_w = scaled(UILayout.CHAT_WIDTH)
+                btn_h = scaled(UILayout.DRAW_BUTTON_HEIGHT)
+                draw_button_rect = pygame.Rect(btn_x, btn_y, btn_w, btn_h)
+
+                # Determine button state and colors
+                if draw_offered_by_opponent:
+                    # Opponent offered - show accept button with flash effect
+                    if draw_button_flash_timer > 0:
+                        draw_button_flash_timer -= 1
+                        # Flash between two colors
+                        if (draw_button_flash_timer // 10) % 2 == 0:
+                            btn_color = UILayout.DRAW_BUTTON_ACCEPT_BG_FLASH
+                        else:
+                            btn_color = UILayout.DRAW_BUTTON_ACCEPT_BG_DARK
+                    else:
+                        btn_color = UILayout.DRAW_BUTTON_ACCEPT_BG
+                    btn_text = "Принять ничью"
+                    text_color = UILayout.DRAW_BUTTON_ACCEPT_TEXT
+                elif draw_offered_by_us:
+                    # We offered - show waiting state
+                    btn_color = UILayout.DRAW_BUTTON_WAITING_BG
+                    btn_text = "Ожидание..."
+                    text_color = UILayout.DRAW_BUTTON_WAITING_TEXT
+                else:
+                    # Default state
+                    btn_color = UILayout.DRAW_BUTTON_BG
+                    btn_text = "Предложить ничью"
+                    text_color = UILayout.DRAW_BUTTON_TEXT
+
+                pygame.draw.rect(renderer.screen, btn_color, draw_button_rect)
+                pygame.draw.rect(renderer.screen, UILayout.DRAW_BUTTON_BORDER, draw_button_rect, 1)
+
+                # Render button text
+                text_surface = renderer.font_small.render(btn_text, True, text_color)
+                text_x = btn_x + (btn_w - text_surface.get_width()) // 2
+                text_y = btn_y + (btn_h - text_surface.get_height()) // 2
+                renderer.screen.blit(text_surface, (text_x, text_y))
+
+                if not show_pause_menu:
+                    renderer.finalize_frame()
             # Draw pause menu overlay if active
             if show_pause_menu:
                 renderer.draw_pause_menu(current_resolution, is_network_game=True)
