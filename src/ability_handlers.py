@@ -112,9 +112,9 @@ def check_preconditions(
             return False, f"нужно {ability.requires_counters} фишек (есть {card.counters})"
 
     # Position preconditions
-    if ability.requires_own_row > 0:
+    if ability.requires_own_row is not None:
         if not game._is_in_own_row(card, ability.requires_own_row):
-            row_names = {1: "первом", 2: "втором", 3: "третьем"}
+            row_names = {0: "третьем", 1: "втором", 2: "первом"}  # 0=back(3rd), 1=mid(2nd), 2=front(1st)
             return False, f"нужно быть в {row_names.get(ability.requires_own_row, '?')} ряду"
 
     if ability.requires_edge_column:
@@ -165,7 +165,7 @@ def check_trigger_preconditions(
             return False
 
     # Row requirement
-    if ability.requires_own_row > 0:
+    if ability.requires_own_row is not None:
         if not game._is_in_own_row(card, ability.requires_own_row):
             return False
 
@@ -447,12 +447,21 @@ def handle_borg_strike(game: "Game", card: "Card", target: Optional["Card"], abi
     damage = ability.damage_amount  # Fixed 3 damage
     game.emit_arrow(card.position, target.position, 'attack')
 
+    # Apply hit damage reduction (diagonal_defense, etc.)
+    hit_reduction = game._get_hit_damage_reduction(target, card)
+    initial_damage = damage
+    if hit_reduction > 0 and damage > 0:
+        damage = max(0, damage - hit_reduction)
+
     # If target is tapped, stun it (won't untap next turn)
     if target.tapped:
         target.stunned = True
-        game.log(f"{card.name} бьёт рогами {target.name}: {damage} урона + оглушение!")
+        game.log(f"{card.name} бьёт рогами {target.name}: {initial_damage} урона + оглушение!")
     else:
-        game.log(f"{card.name} бьёт рогами {target.name}: {damage} урона")
+        game.log(f"{card.name} бьёт рогами {target.name}: {initial_damage} урона")
+
+    if hit_reduction > 0 and damage < initial_damage:
+        game.log(f"  [{target.name}: {initial_damage}-{hit_reduction}={damage}]")
 
     game._deal_damage(target, damage)
     game.emit_clear_arrows()

@@ -25,20 +25,20 @@ class Board:
     Row 0   │ 0 │ 1 │ 2 │ 3 │ 4 │  <- Player 1 back row
             └───┴───┴───┴───┴───┘
 
-    Flying zones (3 slots per player):
-        Player 1: positions 30, 31, 32
-        Player 2: positions 33, 34, 35
+    Flying zones (5 slots per player):
+        Player 1: positions 30-34
+        Player 2: positions 35-39
 
     Position = row * 5 + col (for main board 0-29)
     """
 
-    FLYING_P1_START = 30  # Positions 30, 31, 32
-    FLYING_P2_START = 33  # Positions 33, 34, 35
-    FLYING_SLOTS = 3
+    FLYING_P1_START = 30  # Positions 30-34
+    FLYING_P2_START = 35  # Positions 35-39
+    FLYING_SLOTS = 5  # Max flyers based on 15 crystal limit
 
     def __init__(self):
         self.cells: List[Optional[Card]] = [None] * (BOARD_COLS * BOARD_ROWS)
-        # Flying zones (3 slots per player)
+        # Flying zones (5 slots per player)
         self.flying_p1: List[Optional[Card]] = [None] * self.FLYING_SLOTS
         self.flying_p2: List[Optional[Card]] = [None] * self.FLYING_SLOTS
         self.graveyard_p1: List[Card] = []
@@ -170,6 +170,10 @@ class Board:
     def get_valid_moves(self, card: Card) -> List[int]:
         """Get valid movement positions for a card (1 square at a time, or jump)."""
         if card.position is None or card.tapped or card.curr_move <= 0:
+            return []
+
+        # Flying creatures cannot move on the main board
+        if self.is_flying_pos(card.position):
             return []
 
         # Check if card has jump ability

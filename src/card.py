@@ -116,6 +116,9 @@ class Card:
     can_attack_flyer: bool = field(default=False)
     can_attack_flyer_until_turn: int = field(default=0)  # Owner's turn number when it expires
 
+    # Hidden card state - card is face-down (P2 back row at game start)
+    face_down: bool = field(default=False)
+
     @property
     def stats(self) -> CardStats:
         """Look up CardStats from registry by def_id."""
@@ -259,6 +262,23 @@ class Card:
         """Check if card has a specific ability."""
         return ability_id in self.stats.ability_ids
 
+    def reveal(self) -> bool:
+        """Reveal a face-down card. Returns True if card was revealed."""
+        if self.face_down:
+            self.face_down = False
+            return True
+        return False
+
+    @classmethod
+    def create_hidden_placeholder(cls, player: int, card_id: int, position: Optional[int]) -> 'Card':
+        """Create a placeholder card for network-redacted hidden cards."""
+        card = cls(def_id="???", player=player, id=card_id)
+        card.position = position
+        card.face_down = True
+        card.curr_life = 1  # Placeholder values
+        card.curr_move = 0
+        return card
+
     def __repr__(self):
         return f"Card({self.name}, P{self.player}, HP:{self.curr_life}/{self.life})"
 
@@ -294,6 +314,7 @@ class Card:
             'formation_armor_max': self.formation_armor_max,
             'can_attack_flyer': self.can_attack_flyer,
             'can_attack_flyer_until_turn': self.can_attack_flyer_until_turn,
+            'face_down': self.face_down,
         }
 
     @classmethod
@@ -301,7 +322,16 @@ class Card:
         """Deserialize card instance from dictionary.
 
         Card definition is looked up from registry by def_id.
+        For hidden/redacted cards from network, creates a placeholder.
         """
+        # Handle redacted hidden cards (no def_id, has hidden flag)
+        if data.get('hidden') and 'def_id' not in data:
+            return cls.create_hidden_placeholder(
+                player=data['player'],
+                card_id=data.get('id', 0),
+                position=data.get('position'),
+            )
+
         card = cls(
             def_id=data['def_id'],
             player=data['player'],
@@ -331,6 +361,7 @@ class Card:
         card.formation_armor_max = data.get('formation_armor_max', 0)
         card.can_attack_flyer = data.get('can_attack_flyer', False)
         card.can_attack_flyer_until_turn = data.get('can_attack_flyer_until_turn', 0)
+        card.face_down = data.get('face_down', False)
         return card
 
 
@@ -342,3 +373,19 @@ def create_card(name: str, player: int, card_id: int) -> Card:
     if get_card_stats(name) is None:
         raise ValueError(f"Unknown card: {name}")
     return Card(def_id=name, player=player, id=card_id)
+
+
+# Hidden placeholder card stats for network-redacted cards
+HIDDEN_CARD_STATS = CardStats(
+    name="???",
+    cost=0,
+    element=Element.FOREST,  # Doesn't matter for hidden cards
+    card_type=CardType.CREATURE,
+    life=1,
+    attack=(0, 0, 0),
+    move=0,
+    description="Скрытая карта противника",
+)
+
+# Register hidden card placeholder
+register_card_stats(HIDDEN_CARD_STATS)

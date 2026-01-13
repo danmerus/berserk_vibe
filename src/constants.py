@@ -169,6 +169,9 @@ class UILayout:
     SIDE_PANEL_CARD_SIZE = 100 # Size of card thumbnails in side panels
     SIDE_PANEL_CARD_SPACING = 4  # Space between cards in panels
 
+    # Card name display
+    CARD_NAME_MAX_LEN = 17     # Max characters before truncation with ellipsis
+
     # -------------------------------------------------------------------------
     # BUTTONS
     # -------------------------------------------------------------------------
@@ -204,8 +207,8 @@ class UILayout:
     # -------------------------------------------------------------------------
     CHAT_X = 10
     CHAT_Y = 120
-    CHAT_WIDTH = 200
-    CHAT_HEIGHT = 380
+    CHAT_WIDTH = 250
+    CHAT_HEIGHT = 500
     CHAT_INPUT_HEIGHT = 32
     CHAT_TITLE_HEIGHT = 24
     CHAT_MESSAGE_PADDING = 4
@@ -213,8 +216,8 @@ class UILayout:
     # -------------------------------------------------------------------------
     # DRAW BUTTON (network games only, below chat)
     # -------------------------------------------------------------------------
-    DRAW_BUTTON_OFFSET_Y = 150      # Gap between chat and draw button
-    DRAW_BUTTON_HEIGHT = 30
+    DRAW_BUTTON_OFFSET_Y = 350      # Gap between chat and draw button
+    DRAW_BUTTON_HEIGHT = 50
     # Colors (normal state)
     DRAW_BUTTON_BG = (60, 60, 70)
     DRAW_BUTTON_BORDER = (100, 100, 110)
@@ -340,6 +343,23 @@ class UILayout:
     DECK_BUILDER_INDICATOR_HEIGHT = 14
     # Scrollbar
     DECK_BUILDER_SCROLLBAR_WIDTH = 12
+
+    # -------------------------------------------------------------------------
+    # DICE DISPLAY (combat roll indicators)
+    # X: offset from board edges (left of board, right of board)
+    # Y: anchored to GRAVEYARD_P1_Y
+    # -------------------------------------------------------------------------
+    DICE_SIZE = 48             # Size of dice icons
+    # Board edges in base resolution (for anchoring)
+    BOARD_LEFT_X = 340         # Left edge of board (base resolution)
+    BOARD_RIGHT_X = 840        # Right edge of board (340 + 5*100)
+    # Offsets from board edges
+    DICE_X_OFFSET = 10         # X offset from board edge (negative = towards board)
+    DICE_Y_OFFSET = 100        # Y offset from GRAVEYARD_P1_Y (negative = above)
+    # Animation and styling
+    DICE_BONUS_FONT_SIZE = 16  # Font size for bonus text
+    DICE_ANIM_DURATION = 0.4   # Animation duration in seconds
+    DICE_SPACING = 8           # Space between dice and bonus text
 
     # -------------------------------------------------------------------------
     # HELPER METHODS

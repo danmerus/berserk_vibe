@@ -304,6 +304,8 @@ class GameClient:
 
     def _apply_forced_attack_constraints(self, card_id: int) -> bool:
         """Apply forced attack constraints to UI state. Returns True if constraints applied."""
+        if self.game is None:
+            return False
         # Check for forced attacks on THIS card
         forced = compute_forced_attacks(self.game, card_id)
         if forced:
@@ -321,6 +323,8 @@ class GameClient:
 
     def select_card(self, card_id: int):
         """Select a card and compute valid actions."""
+        if self.game is None:
+            return
         card = self.game.get_card_by_id(card_id)
         if card is None:
             self.deselect()
@@ -349,6 +353,8 @@ class GameClient:
         """Toggle between move and attack mode."""
         if self.ui.selected_card_id is None:
             return
+        if self.game is None:
+            return
 
         # Check forced attack constraints first
         if self._apply_forced_attack_constraints(self.ui.selected_card_id):
@@ -371,6 +377,8 @@ class GameClient:
         Call this after game state changes (move, attack, turn change, etc.).
         """
         if self.ui.selected_card_id is None:
+            return
+        if self.game is None:
             return
 
         card = self.game.get_card_by_id(self.ui.selected_card_id)

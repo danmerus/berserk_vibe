@@ -56,7 +56,7 @@ def _kill_process_on_port(port: int) -> bool:
                     if pid.isdigit():
                         # Kill the process
                         subprocess.run(
-                            ['taskkill', '//F', '//PID', pid],
+                            ['taskkill', '/F', '/PID', pid],
                             capture_output=True, timeout=5
                         )
                         time.sleep(0.3)  # Wait for port to be released
@@ -817,7 +817,15 @@ class NetworkUI:
         """Start a local game server."""
         global _active_server_process
 
+        # Check instance server first
         if self.server_process and self.server_process.poll() is None:
+            self.status_message = "Сервер уже запущен"
+            return
+
+        # Check global server (might be from previous NetworkUI instance)
+        if _active_server_process and _active_server_process.poll() is None:
+            # Restore reference and reuse existing server
+            self.server_process = _active_server_process
             self.status_message = "Сервер уже запущен"
             return
 

@@ -19,8 +19,8 @@ from pathlib import Path
 from .protocol import (
     Message, MessageType, FrameReader,
     msg_welcome, msg_error, msg_pong, msg_match_created, msg_match_joined,
-    msg_player_joined, msg_game_start, msg_update, msg_resync, msg_game_over,
-    msg_match_list, msg_player_ready_status, msg_chat, msg_draw_offered,
+    msg_player_joined, msg_player_left, msg_game_start, msg_update, msg_resync,
+    msg_game_over, msg_match_list, msg_player_ready_status, msg_chat, msg_draw_offered,
 )
 from .session import PlayerSession, MatchSession, SessionState
 from ..match import MatchServer, get_content_hash
@@ -169,15 +169,17 @@ class GameServer:
             match = self.matches[session.match_id]
             match.remove_player(session)
 
-            # Notify opponent
+            # Notify opponent that player disconnected
             opponent = match.get_opponent_session(session.player_number)
             if opponent:
                 try:
-                    from .protocol import msg_player_joined
-                    # TODO: Add PLAYER_LEFT message
-                    pass
+                    await self._send(opponent, msg_player_left(
+                        session.player_number,
+                        session.player_name,
+                        "disconnected"
+                    ))
                 except Exception:
-                    pass
+                    pass  # Opponent might also be disconnected
 
             # Clean up empty match
             if match.is_empty:
@@ -358,13 +360,19 @@ class GameServer:
 
         match = self.matches.get(session.match_id)
         if match:
-            match.remove_player(session)
-
-            # Notify opponent
+            # Notify opponent before removing player
             opponent = match.get_opponent_session(session.player_number)
             if opponent:
-                # TODO: Send player left notification
-                pass
+                try:
+                    await self._send(opponent, msg_player_left(
+                        session.player_number,
+                        session.player_name,
+                        "left"
+                    ))
+                except Exception:
+                    pass
+
+            match.remove_player(session)
 
             # Clean up empty match
             if match.is_empty:

@@ -39,7 +39,7 @@ class MessageType(Enum):
     MATCH_JOINED = auto()   # Server → Client: successfully joined
     MATCH_LEFT = auto()     # Server → Client: left match
     PLAYER_JOINED = auto()  # Server → Client: other player joined
-    PLAYER_LEFT = auto()    # Server → Client: other player left
+    PLAYER_LEFT = auto()    # Server → Client: other player left/disconnected
 
     # Ready phase
     PLAYER_READY = auto()       # Client → Server: player is ready
@@ -243,6 +243,18 @@ def msg_player_joined(player: int, player_name: str) -> Message:
     )
 
 
+def msg_player_left(player: int, player_name: str, reason: str = "disconnected") -> Message:
+    """Notify that another player left or disconnected."""
+    return Message(
+        type=MessageType.PLAYER_LEFT,
+        payload={
+            'player': player,
+            'player_name': player_name,
+            'reason': reason,  # "disconnected", "left", "timeout"
+        }
+    )
+
+
 def msg_game_start(snapshot: Dict[str, Any]) -> Message:
     """Game is starting."""
     return Message(
@@ -282,6 +294,11 @@ def msg_resync(snapshot: Dict[str, Any], seq: int) -> Message:
         seq=seq,
         payload={'snapshot': snapshot}
     )
+
+
+def msg_request_resync() -> Message:
+    """Request full resync from server."""
+    return Message(type=MessageType.REQUEST_RESYNC)
 
 
 def msg_game_over(winner: int) -> Message:

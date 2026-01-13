@@ -29,7 +29,7 @@ from .protocol import (
     Message, MessageType, FrameReader,
     msg_hello, msg_ping, msg_create_match, msg_join_match,
     msg_command, msg_list_matches, msg_player_ready, msg_leave_match,
-    msg_chat, msg_draw_offer, msg_draw_accept,
+    msg_chat, msg_draw_offer, msg_draw_accept, msg_request_resync,
 )
 from ..match import get_content_hash, CommandResult
 from ..commands import Command, Event
@@ -84,6 +84,9 @@ class NetworkClient:
     # Command tracking
     _command_seq: int = 0
     _server_seq: int = 0
+    _last_command_time: float = 0.0  # Time of last command sent
+    _pending_response: bool = False  # True if waiting for server response
+    _resync_requested: bool = False  # True if we already requested resync for this timeout
 
     # Thread-safe queues
     _outgoing: Queue = field(default_factory=Queue)
@@ -103,6 +106,9 @@ class NetworkClient:
     on_match_list: Optional[Callable[[List[dict]], None]] = None
     on_chat: Optional[Callable[[str, str, int], None]] = None  # player_name, text, player_number
     on_draw_offered: Optional[Callable[[int], None]] = None  # player_number who offered
+    on_player_left: Optional[Callable[[int, str, str], None]] = None  # player_number, player_name, reason
+    on_resync: Optional[Callable[[dict], None]] = None  # Called when server sends full resync
+    on_resync_requested: Optional[Callable[[], None]] = None  # Called when client requests resync (timeout)
 
     def __post_init__(self):
         self._outgoing = Queue()
@@ -187,6 +193,9 @@ class NetworkClient:
             return
 
         self._command_seq += 1
+        self._last_command_time = time.time()
+        self._pending_response = True
+        self._resync_requested = False
         self._queue_message(msg_command(cmd, self._command_seq))
 
     def send_chat(self, text: str):
@@ -207,6 +216,19 @@ class NetworkClient:
             return
         self._queue_message(msg_draw_accept())
 
+    def request_resync(self):
+        """Request full game state resync from server.
+
+        Call this if you suspect the client is out of sync with the server.
+        """
+        if self.state != ClientState.IN_MATCH:
+            return
+        logger.info("Requesting resync from server")
+        self._queue_message(msg_request_resync())
+
+    # Timeout for command response before auto-resync (seconds)
+    COMMAND_TIMEOUT = 5.0
+
     def poll(self):
         """Process pending messages from network thread.
 
@@ -219,6 +241,26 @@ class NetworkClient:
                 break
 
             self._handle_incoming(msg_type, data)
+
+        # Check for command timeout and auto-resync
+        self._check_command_timeout()
+
+    def _check_command_timeout(self):
+        """Check if a command has timed out and request resync if needed."""
+        if not self._pending_response:
+            return
+        if self._resync_requested:
+            return
+        if self.state != ClientState.IN_MATCH:
+            return
+
+        elapsed = time.time() - self._last_command_time
+        if elapsed >= self.COMMAND_TIMEOUT:
+            logger.warning(f"Command timed out after {elapsed:.1f}s, requesting resync")
+            self._resync_requested = True
+            if self.on_resync_requested:
+                self.on_resync_requested()
+            self.request_resync()
 
     def _queue_message(self, msg: Optional[Message]):
         """Queue message for sending."""
@@ -261,6 +303,23 @@ class NetworkClient:
             if self.on_player_joined:
                 self.on_player_joined(data['player'], data.get('player_name', ''))
 
+        elif msg_type == 'player_left':
+            self.opponent_name = ''
+            left_player = data.get('player', 0)
+            # When opponent leaves during a game, the remaining player wins
+            if self.game and left_player != 0 and left_player != self.player_number:
+                from ..constants import GamePhase
+                self.game.winner = self.player_number  # We win
+                self.game.phase = GamePhase.GAME_OVER
+                if self.on_game_over:
+                    self.on_game_over(self.player_number)
+            if self.on_player_left:
+                self.on_player_left(
+                    left_player,
+                    data.get('player_name', ''),
+                    data.get('reason', 'disconnected'),
+                )
+
         elif msg_type == 'ready_status':
             if self.on_ready_status:
                 self.on_ready_status(
@@ -277,6 +336,9 @@ class NetworkClient:
                 self.on_game_start(data.get('snapshot', {}))
 
         elif msg_type == 'update':
+            # Response received, clear pending state
+            self._pending_response = False
+            self._resync_requested = False
             # Reconstruct CommandResult
             result = CommandResult(
                 accepted=data.get('accepted', False),
@@ -291,8 +353,13 @@ class NetworkClient:
                 self.on_update(result)
 
         elif msg_type == 'resync':
+            # Resync received, clear pending state
+            self._pending_response = False
+            self._resync_requested = False
             if data.get('snapshot'):
                 self.game = Game.from_dict(data['snapshot'])
+                if self.on_resync:
+                    self.on_resync(data['snapshot'])
 
         elif msg_type == 'game_over':
             # Update game state
@@ -313,11 +380,8 @@ class NetworkClient:
                 self.on_chat(data.get('player_name', ''), data.get('text', ''), data.get('player_number', 0))
 
         elif msg_type == 'draw_offered':
-            print(f"[DEBUG] Client received draw_offered: {data}")
             if self.on_draw_offered:
                 self.on_draw_offered(data.get('player_number', 0))
-            else:
-                print("[DEBUG] No on_draw_offered callback set!")
 
     # =========================================================================
     # NETWORK THREAD
@@ -492,6 +556,13 @@ class NetworkClient:
             self._incoming.put(('player_joined', {
                 'player': msg.payload.get('player', 0),
                 'player_name': msg.payload.get('player_name', ''),
+            }))
+
+        elif msg.type == MessageType.PLAYER_LEFT:
+            self._incoming.put(('player_left', {
+                'player': msg.payload.get('player', 0),
+                'player_name': msg.payload.get('player_name', ''),
+                'reason': msg.payload.get('reason', 'disconnected'),
             }))
 
         elif msg.type == MessageType.PLAYER_READY_STATUS:

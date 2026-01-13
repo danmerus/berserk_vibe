@@ -354,6 +354,7 @@ CARD_DATABASE = {
         move=1,
         is_flying=True,
         description="",
+        is_unique=True,
         ability_ids=["flying", "direct_attack", "anti_magic"]
     ),
     "Матросы Аделаиды": CardStats(

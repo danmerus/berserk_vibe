@@ -99,6 +99,12 @@ class Ability:
     # Instant ability (внезапное действие) - can be used during priority windows
     is_instant: bool = False   # If true, can be used during opponent's turn / in response
 
+    # Magic ability - for anti_magic bonus (+1 damage vs creatures with magic)
+    is_magic: bool = False     # True for discharge, magical strike, spell abilities
+
+    # Hit ability - for damage reduction (diagonal_defense applies to hits)
+    is_hit: bool = False       # True for attacks that count as "удары" (strikes/hits)
+
     # Formation (Строй) ability - bonus when orthogonally adjacent to allies with same ability
     is_formation: bool = False
     formation_damage_reduction: int = 0  # Damage reduction when in formation
@@ -117,7 +123,7 @@ class Ability:
     spends_counters: bool = False        # If true, ability consumes counters (amount = requires_counters)
 
     # Position preconditions (for card using ability)
-    requires_own_row: int = 0            # Must be in this row (1=front, 2=middle, 3=back), 0=any
+    requires_own_row: Optional[int] = None  # Must be in this row (0=back, 1=middle, 2=front), None=any
     requires_edge_column: bool = False   # Must be in column 0 or 4 (flanks)
     requires_center_column: bool = False # Must be in column 2 (center)
 
@@ -169,6 +175,7 @@ ABILITY_HEAL_ALLY = Ability(
     range=99,  # No range limit for воздействие
     effect_type=EffectType.HEAL_TARGET,
     heal_amount=2,
+    can_target_flying=True,  # Can heal flying creatures
 )
 
 ABILITY_HEAL_1 = Ability(
@@ -180,6 +187,7 @@ ABILITY_HEAL_1 = Ability(
     range=99,
     effect_type=EffectType.HEAL_TARGET,
     heal_amount=1,
+    can_target_flying=True,  # Can heal flying creatures
 )
 
 # Movement-triggered shot (Оури) - when moving adjacent to ally costing 7+
@@ -257,6 +265,8 @@ ABILITY_ATTACK_EXP = Ability(
 )
 
 # Row bonus triggers for Бегущая по кронам
+# Row numbering: 0=back (home), 1=middle, 2=front (toward enemy)
+# Russian naming: "первый ряд"=front (2), "третий ряд"=back (0)
 ABILITY_FRONT_ROW_BONUS = Ability(
     id="front_row_bonus",
     name="Бонус первого ряда",
@@ -265,7 +275,7 @@ ABILITY_FRONT_ROW_BONUS = Ability(
     trigger=AbilityTrigger.ON_TURN_START,
     effect_type=EffectType.BUFF_RANGED,
     damage_bonus=1,  # +1 to ranged damage
-    requires_own_row=1,  # Only activates in first row
+    requires_own_row=2,  # Front row (toward enemy)
 )
 
 ABILITY_BACK_ROW_DIRECT = Ability(
@@ -276,7 +286,7 @@ ABILITY_BACK_ROW_DIRECT = Ability(
     trigger=AbilityTrigger.ON_TURN_START,
     effect_type=EffectType.GRANT_DIRECT,
     grants_direct=True,
-    requires_own_row=3,  # Only activates in third row
+    requires_own_row=0,  # Back row (home)
 )
 
 ABILITY_REGENERATION = Ability(
@@ -351,6 +361,8 @@ ABILITY_MAGICAL_STRIKE = Ability(
     target_type=TargetType.ANY,
     range=1,
     magic_damage=(2, 2, 2),
+    is_magic=True,
+    is_hit=True,  # Counts as a hit for damage reduction
 )
 
 # Center column bonus - +1 defense, -1 incoming weak damage when in center column
@@ -386,8 +398,8 @@ ABILITY_JUMP = Ability(
 # Gain counter - tap to gain a token/counter (for discharge)
 ABILITY_GAIN_COUNTER = Ability(
     id="gain_counter",
-    name="Получить фишку",
-    description="Получить фишку (макс 3)",
+    name="Накопить фишку",
+    description="Накопить фишку (макс 3)",
     ability_type=AbilityType.ACTIVE,
     target_type=TargetType.SELF,
     effect_type=EffectType.GAIN_COUNTER,
@@ -406,6 +418,7 @@ ABILITY_DISCHARGE = Ability(
     damage_amount=2,  # Base damage
     status_text="разряд",
     can_target_flying=True,  # Magical ranged attack
+    is_magic=True,
 )
 
 # Magic protection (zom) - immune to spells, magical strikes, and discharges
@@ -687,6 +700,7 @@ ABILITY_BORG_STRIKE = Ability(
     status_text="особый удар",
     requires_counters=1,  # Needs 1 counter to use
     spends_counters=True,  # Consumes the counter
+    is_hit=True,  # Counts as a hit for damage reduction
 )
 
 # Гном-басаарг: +1 strike and direct vs tapped enemies
@@ -744,6 +758,8 @@ ABILITY_AXE_STRIKE = Ability(
     magic_damage=(0, 1, 2),  # Base damage per tier
     magic_counter_bonus=1,  # +1 damage per counter spent
     status_text="маг. удар",
+    is_magic=True,
+    is_hit=True,  # Counts as a hit for damage reduction
 )
 
 # Anti-swamp: +2 damage vs swamp creatures

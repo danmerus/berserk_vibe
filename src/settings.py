@@ -13,6 +13,7 @@ DEFAULT_SETTINGS = {
     "resolution": [1920, 1080],
     "fullscreen": False,
     "nickname": "",
+    "sound_enabled": True,
 }
 
 
@@ -87,4 +88,17 @@ def set_nickname(nickname: str):
     """Save nickname setting."""
     settings = load_settings()
     settings["nickname"] = nickname
+    save_settings(settings)
+
+
+def get_sound_enabled() -> bool:
+    """Get saved sound enabled setting."""
+    settings = load_settings()
+    return settings.get("sound_enabled", True)
+
+
+def set_sound_enabled(enabled: bool):
+    """Save sound enabled setting."""
+    settings = load_settings()
+    settings["sound_enabled"] = enabled
     save_settings(settings)

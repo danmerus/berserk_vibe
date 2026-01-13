@@ -188,6 +188,7 @@ class EventType(Enum):
     CARD_UNTAPPED = auto()
     CARD_DIED = auto()
     CARD_SPAWNED = auto()  # For summoning
+    CARD_REVEALED = auto()  # Face-down card revealed
 
     # Combat
     COMBAT_STARTED = auto()
@@ -299,11 +300,13 @@ def evt_game_over(winner: int) -> Event:
 def evt_card_moved(card_id: int, from_pos: int, to_pos: int) -> Event:
     return Event(EventType.CARD_MOVED, card_id=card_id, from_position=from_pos, to_position=to_pos)
 
-def evt_card_damaged(card_id: int, amount: int, source_id: Optional[int] = None) -> Event:
-    return Event(EventType.CARD_DAMAGED, card_id=card_id, amount=amount, source_id=source_id)
+def evt_card_damaged(card_id: int, amount: int, position: int = -1, source_id: Optional[int] = None) -> Event:
+    """Card damaged event. Position is stored so floating text works even after card dies."""
+    return Event(EventType.CARD_DAMAGED, card_id=card_id, amount=amount, position=position, source_id=source_id)
 
-def evt_card_healed(card_id: int, amount: int, source_id: Optional[int] = None) -> Event:
-    return Event(EventType.CARD_HEALED, card_id=card_id, amount=amount, source_id=source_id)
+def evt_card_healed(card_id: int, amount: int, position: int = -1, source_id: Optional[int] = None) -> Event:
+    """Card healed event. Position is stored for floating text consistency."""
+    return Event(EventType.CARD_HEALED, card_id=card_id, amount=amount, position=position, source_id=source_id)
 
 def evt_card_tapped(card_id: int) -> Event:
     return Event(EventType.CARD_TAPPED, card_id=card_id)
@@ -311,8 +314,14 @@ def evt_card_tapped(card_id: int) -> Event:
 def evt_card_untapped(card_id: int) -> Event:
     return Event(EventType.CARD_UNTAPPED, card_id=card_id)
 
-def evt_card_died(card_id: int) -> Event:
-    return Event(EventType.CARD_DIED, card_id=card_id)
+def evt_card_died(card_id: int, position: int = -1, visual_index: int = -1) -> Event:
+    """Card died event. visual_index is for flying cards to track their visual position."""
+    return Event(EventType.CARD_DIED, card_id=card_id, position=position,
+                 context={'visual_index': visual_index} if visual_index >= 0 else {})
+
+def evt_card_revealed(card_id: int, card_data: dict) -> Event:
+    """Card revealed event - includes full card data for network sync."""
+    return Event(EventType.CARD_REVEALED, card_id=card_id, context={'card_data': card_data})
 
 def evt_dice_rolled(attacker_id: int, defender_id: int, atk_roll: int, def_roll: int) -> Event:
     return Event(
