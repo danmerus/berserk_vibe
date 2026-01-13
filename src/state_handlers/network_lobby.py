@@ -100,8 +100,7 @@ class NetworkLobbyHandler(StateHandler):
                 ctx.network_client.on_draw_offered = on_draw_offered
 
                 def on_resync_requested():
-                    if ctx.network_chat:
-                        ctx.network_chat.add_system_message("Соединение потеряно, синхронизация...")
+                    pass  # Silent resync
                 ctx.network_client.on_resync_requested = on_resync_requested
 
                 def on_resync_received(snapshot):
@@ -110,8 +109,6 @@ class NetworkLobbyHandler(StateHandler):
                         if ctx.network_game_client:
                             ctx.network_game_client.game = ctx.network_game
                             ctx.network_game_client.refresh_selection()
-                    if ctx.network_chat:
-                        ctx.network_chat.add_system_message("Синхронизация завершена")
                 ctx.network_client.on_resync = on_resync_received
 
                 def on_player_left(player_num, player_name, reason):

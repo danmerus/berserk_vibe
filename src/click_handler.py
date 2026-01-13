@@ -148,7 +148,17 @@ class GameClickHandler:
 
         # Heal confirmation popup
         if self.game.awaiting_heal_confirm:
-            choice = self.renderer.get_clicked_heal_button(mx, my)
+            choice = self.renderer.get_clicked_choice_button('heal_confirm', mx, my)
+            if choice == 'yes':
+                self.send(cmd_confirm(player, True))
+                return True
+            elif choice == 'no':
+                self.send(cmd_confirm(player, False))
+                return True
+
+        # Untap confirmation popup
+        if self.game.awaiting_untap_confirm:
+            choice = self.renderer.get_clicked_choice_button('untap_confirm', mx, my)
             if choice == 'yes':
                 self.send(cmd_confirm(player, True))
                 return True
@@ -168,7 +178,7 @@ class GameClickHandler:
 
         # Stench choice popup
         if self.game.awaiting_stench_choice:
-            choice = self.renderer.get_clicked_stench_button(mx, my)
+            choice = self.renderer.get_clicked_choice_button('stench_choice', mx, my)
             if choice == 'tap':
                 self.send(cmd_confirm(player, True))
                 return True
@@ -308,6 +318,13 @@ class GameClickHandler:
 
         # Handle valhalla target selection
         if self.game.awaiting_valhalla:
+            if self.game.interaction and self.game.interaction.can_select_position(pos):
+                self.send(cmd_choose_position(player, pos))
+                return True
+            return True
+
+        # Handle untap selection (click highlighted card to untap)
+        if self.game.awaiting_select_untap:
             if self.game.interaction and self.game.interaction.can_select_position(pos):
                 self.send(cmd_choose_position(player, pos))
                 return True

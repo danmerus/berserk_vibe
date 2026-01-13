@@ -104,6 +104,16 @@ class GameHandler(StateHandler):
             self._send_command(cmd_confirm(player, False))
             return None
 
+        elif event.key == pygame.K_y and game.awaiting_untap_confirm:
+            player = game.interaction.acting_player if game.interaction else game.current_player
+            self._send_command(cmd_confirm(player, True))
+            return None
+
+        elif event.key == pygame.K_n and game.awaiting_untap_confirm:
+            player = game.interaction.acting_player if game.interaction else game.current_player
+            self._send_command(cmd_confirm(player, False))
+            return None
+
         return None
 
     def _handle_click(self, mx: int, my: int) -> Optional['AppState']:

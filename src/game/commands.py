@@ -92,6 +92,9 @@ class CommandsMixin:
                 if self.awaiting_heal_confirm:
                     self.confirm_heal_on_attack(cmd.confirmed)
                     return True, self.pop_events()
+                if self.awaiting_untap_confirm:
+                    self.confirm_untap(cmd.confirmed)
+                    return True, self.pop_events()
                 if self.awaiting_exchange_choice:
                     return self.resolve_exchange_choice(reduce_damage=not cmd.confirmed), self.pop_events()
                 if self.awaiting_stench_choice:
@@ -108,22 +111,15 @@ class CommandsMixin:
 
         elif cmd.type == CommandType.CHOOSE_POSITION:
             if cmd.position is not None:
+                # Defender uses card_id validation, others use position
                 if self.awaiting_defender:
                     card = self.board.get_card(cmd.position)
                     if card and self.interaction.can_select_card_id(card.id):
                         return self.choose_defender(card), self.pop_events()
-                elif self.awaiting_counter_shot:
-                    if self.interaction.can_select_position(cmd.position):
-                        return self.select_counter_shot_target(cmd.position), self.pop_events()
-                elif self.awaiting_movement_shot:
-                    if self.interaction.can_select_position(cmd.position):
-                        return self.select_movement_shot_target(cmd.position), self.pop_events()
-                elif self.awaiting_valhalla:
-                    if self.interaction.can_select_position(cmd.position):
-                        return self.select_valhalla_target(cmd.position), self.pop_events()
-                elif self.awaiting_ability_target:
-                    if self.interaction.can_select_position(cmd.position):
-                        return self.select_ability_target(cmd.position), self.pop_events()
+                # Generic position selection for all other types
+                elif self.interaction and self.interaction.is_board_selection:
+                    if self.resolve_position_selection(cmd.position):
+                        return True, self.pop_events()
             return False, self.pop_events()
 
         elif cmd.type == CommandType.CHOOSE_CARD:
@@ -148,11 +144,8 @@ class CommandsMixin:
             return False, self.pop_events()
 
         elif cmd.type == CommandType.SKIP:
-            if self.awaiting_defender:
-                self.skip_defender()
-                return True, self.pop_events()
-            elif self.awaiting_movement_shot:
-                self.skip_movement_shot()
+            # Generic skip handler for all skippable interactions
+            if self.skip_current_interaction():
                 return True, self.pop_events()
             return False, self.pop_events()
 

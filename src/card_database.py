@@ -284,7 +284,7 @@ CARD_DATABASE = {
         move=1,
         is_unique=True,
         description="",
-        ability_ids=["luck"]
+        ability_ids=["luck", "lunge", "opponent_untap"]
     ),
     "Мразень": CardStats(
         name="Мразень",

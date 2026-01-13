@@ -18,6 +18,7 @@ class AbilityType(Enum):
 class AbilityTrigger(Enum):
     """When triggered abilities activate."""
     ON_TURN_START = auto()
+    ON_OPPONENT_TURN_START = auto()  # Triggers at start of opponent's turn
     ON_ATTACK = auto()
     ON_DEFEND = auto()
     ON_TAKE_DAMAGE = auto()
@@ -78,8 +79,9 @@ class Ability:
     can_target_flying: bool = False  # True for ranged attacks that can hit flying creatures
 
     # Dice and damage bonuses
-    dice_bonus_attack: int = 0   # ОвА - added to attack dice roll
+    dice_bonus_attack: int = 0   # ОвА - added to attack dice roll (personal)
     dice_bonus_defense: int = 0  # ОвЗ - added to defense dice roll
+    ally_dice_bonus: int = 0     # ОвА to give to allies (not personal)
     damage_bonus: int = 0        # Flat damage bonus to attacks
 
     # For defensive passives
@@ -250,7 +252,7 @@ ABILITY_LUNGE_FRONT_BUFF = Ability(
     description="После удара через ряд: союзник впереди получает ОвА",
     ability_type=AbilityType.PASSIVE,
     target_type=TargetType.NONE,
-    dice_bonus_attack=1,  # The bonus amount to give
+    ally_dice_bonus=1,  # The bonus amount to give to ally
     status_text="Удар через ряд: ОвА союзнику",
 )
 
@@ -450,7 +452,7 @@ ABILITY_VALHALLA_OVA = Ability(
     description="Союзник получает ОвА+1",
     ability_type=AbilityType.TRIGGERED,
     trigger=AbilityTrigger.VALHALLA,
-    dice_bonus_attack=1,  # +1 to dice roll
+    ally_dice_bonus=1,  # +1 to dice roll for ally
     status_text="Вальхалла",
 )
 
@@ -606,6 +608,17 @@ ABILITY_LUCK = Ability(
     target_type=TargetType.SELF,
     is_instant=True,  # Can be used during priority windows
     status_text="удача",
+)
+
+# Opponent turn untap - may untap at start of opponent's turn
+ABILITY_OPPONENT_UNTAP = Ability(
+    id="opponent_untap",
+    name="Открытие",
+    description="В начале хода противника может открыться",
+    ability_type=AbilityType.TRIGGERED,
+    trigger=AbilityTrigger.ON_OPPONENT_TURN_START,
+    target_type=TargetType.SELF,
+    status_text="может открыться",
 )
 
 # Formation (Строй) abilities - bonuses when orthogonally adjacent to ally with same ability
@@ -855,6 +868,7 @@ ABILITIES = {
     "flyer_taunt": ABILITY_FLYER_TAUNT,
     "web_throw": ABILITY_WEB_THROW,
     "luck": ABILITY_LUCK,
+    "opponent_untap": ABILITY_OPPONENT_UNTAP,
     "stroi_dmg_1": ABILITY_STROI_DMG_1,
     "stroi_ovz_1": ABILITY_STROI_OVZ_1,
     "stroi_atk_1": ABILITY_STROI_ATK_1,

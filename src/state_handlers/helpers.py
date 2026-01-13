@@ -254,6 +254,11 @@ def process_game_events(game: 'Game', renderer: 'Renderer', events: list) -> Non
             renderer.add_arrow(event.from_position, event.to_position, color)
         elif event.type == EventType.ARROWS_CLEARED:
             renderer.clear_arrows()
+        elif event.type == EventType.VALHALLA_APPLIED:
+            # Gold glow effect on the buffed card
+            pos = event.position if event.position is not None and event.position >= 0 else None
+            if pos is not None:
+                renderer.add_valhalla_glow(pos)
         elif event.type == EventType.CARD_DIED:
             # Get card from graveyard (it was just moved there)
             card = None

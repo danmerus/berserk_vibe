@@ -1,10 +1,12 @@
 """Game UI elements - card info, messages, buttons, indicators."""
 import pygame
+import math
+import time
 from typing import Optional, Tuple, List, TYPE_CHECKING
 
 from ..constants import (
     WINDOW_WIDTH, WINDOW_HEIGHT,
-    COLOR_PLAYER1, COLOR_PLAYER2, COLOR_TEXT,
+    COLOR_SELF, COLOR_OPPONENT, COLOR_TEXT,
     GamePhase, scaled, UILayout
 )
 from ..ui import draw_button_simple
@@ -21,11 +23,27 @@ class UIMixin:
     def draw_ui(self, game: 'Game'):
         """Draw UI elements (backgrounds only - text drawn in draw_ui_native)."""
         # End turn button background - use the same rect as click detection
-        # Color based on viewing player (my color), not current player
-        my_color = COLOR_PLAYER1 if self.viewing_player == 1 else COLOR_PLAYER2
+        # Color is always blue for the viewing player (you)
+        my_color = COLOR_SELF
         button_rect = self.get_end_turn_button_rect()
-        pygame.draw.rect(self.screen, my_color, button_rect)
-        pygame.draw.rect(self.screen, COLOR_TEXT, button_rect, 2)
+
+        # Check if all my creatures are tapped (flicker effect)
+        all_tapped = self._all_creatures_tapped(game, self.viewing_player)
+        if all_tapped and game.current_player == self.viewing_player:
+            # Pulsing effect using time
+            pulse = (math.sin(time.time() * 6) + 1) / 2  # 0 to 1, ~3Hz
+            # Blend between normal color and bright yellow
+            r = int(my_color[0] + (255 - my_color[0]) * pulse * 0.5)
+            g = int(my_color[1] + (255 - my_color[1]) * pulse * 0.5)
+            b = int(my_color[2] * (1 - pulse * 0.3))
+            button_color = (r, g, b)
+            border_color = (255, 255, 100) if pulse > 0.5 else COLOR_TEXT
+        else:
+            button_color = my_color
+            border_color = COLOR_TEXT
+
+        pygame.draw.rect(self.screen, button_color, button_rect)
+        pygame.draw.rect(self.screen, border_color, button_rect, 2)
 
         # Store game state for native rendering
         self._ui_game_state = {
@@ -37,34 +55,31 @@ class UIMixin:
 
         # Check if we're the acting player for interaction popups
         is_acting = (game.interaction and game.interaction.acting_player == self.viewing_player)
+        is_waiting = (game.interaction and game.interaction.acting_player and
+                      game.interaction.acting_player != self.viewing_player)
 
-        # Counter shot selection prompt (only for acting player)
-        if game.awaiting_counter_shot and is_acting:
-            self.draw_counter_shot_prompt(game)
+        # Show waiting indicator for non-acting player (network games)
+        if is_waiting:
+            self.draw_waiting_for_opponent_prompt(game)
 
-        # Movement shot selection prompt (only for acting player)
-        if game.awaiting_movement_shot and is_acting:
-            self.draw_movement_shot_prompt(game)
+        # Generic selection prompt for board selections (only for acting player)
+        # This handles: counter shot, movement shot, valhalla, ability target, untap
+        if is_acting and game.interaction and game.interaction.is_board_selection:
+            if game.awaiting_defender:
+                # Defender has special prompt with card images
+                self.draw_defender_prompt(game)
+            else:
+                self.draw_generic_selection_prompt(game)
 
-        # Heal confirmation prompt (only for acting player)
+        # Choice prompts (yes/no style - only for acting player)
         if game.awaiting_heal_confirm and is_acting:
             self.draw_heal_confirm_prompt(game)
-
-        # Stench choice prompt (only for acting player)
+        if game.awaiting_untap_confirm and is_acting:
+            self.draw_untap_confirm_prompt(game)
         if game.awaiting_stench_choice and is_acting:
             self.draw_stench_choice_prompt(game)
-
-        # Exchange choice prompt (only for acting player)
         if game.awaiting_exchange_choice and is_acting:
             self.draw_exchange_prompt(game)
-
-        # Valhalla selection prompt (only for acting player)
-        if game.awaiting_valhalla and is_acting:
-            self.draw_valhalla_prompt(game)
-
-        # Defender choice prompt (only for acting player)
-        if game.awaiting_defender and game.interaction and is_acting:
-            self.draw_defender_prompt(game)
 
         # Selected card info
         if self._ui.selected_card and not game.awaiting_defender:
@@ -73,8 +88,8 @@ class UIMixin:
         # Message log
         self.draw_messages(game)
 
-        # Skip button (only show when something can be skipped and we're acting)
-        if (game.awaiting_defender or game.awaiting_movement_shot) and is_acting:
+        # Skip button (only show when interaction is skippable and we're acting)
+        if is_acting and game.interaction and game.interaction.is_skippable:
             self.draw_skip_button(game)
 
         # Dice panel (shows pending or last combat dice)
@@ -89,8 +104,8 @@ class UIMixin:
             large_font = self.get_native_font('large')
             medium_font = self.get_native_font('medium')
 
-            # Current player indicator
-            player_color = COLOR_PLAYER1 if state['current_player'] == 1 else COLOR_PLAYER2
+            # Current player indicator (blue if it's your turn, red if opponent's)
+            player_color = COLOR_SELF if state['current_player'] == self.viewing_player else COLOR_OPPONENT
             player_text = f"Ход: Игрок {state['current_player']}"
             text_surface = large_font.render(player_text, True, player_color)
             x, y = self.game_to_window_coords(20, 20)
@@ -644,7 +659,8 @@ class UIMixin:
             if atk_has_mods:
                 atk_text += f" = {atk_total}"
 
-            atk_surface = self.font_small.render(atk_text, True, COLOR_PLAYER1)
+            atk_color = self.get_player_color(attacker.player) if attacker else COLOR_SELF
+            atk_surface = self.font_small.render(atk_text, True, atk_color)
             self.screen.blit(atk_surface, (x_offset, panel_y + 8))
             x_offset += atk_surface.get_width() + 20
 
@@ -662,7 +678,8 @@ class UIMixin:
                 if def_has_mods:
                     def_text += f" = {def_total}"
 
-                def_surface = self.font_small.render(def_text, True, COLOR_PLAYER2)
+                def_color = self.get_player_color(defender.player) if defender else COLOR_OPPONENT
+                def_surface = self.font_small.render(def_text, True, def_color)
                 self.screen.blit(def_surface, (x_offset, panel_y + 8))
 
         # Handle CombatResult (after combat resolved)
@@ -674,7 +691,8 @@ class UIMixin:
             if dice.attacker_bonus != 0:
                 atk_text += f" +{dice.attacker_bonus} = {atk_total}"
 
-            atk_surface = self.font_small.render(atk_text, True, COLOR_PLAYER1)
+            atk_color = self.get_player_color(dice.attacker_player)
+            atk_surface = self.font_small.render(atk_text, True, atk_color)
             self.screen.blit(atk_surface, (x_offset, panel_y + 8))
             x_offset += atk_surface.get_width() + 20
 
@@ -683,7 +701,8 @@ class UIMixin:
                 if dice.defender_bonus != 0:
                     def_text += f" +{dice.defender_bonus} = {def_total}"
 
-                def_surface = self.font_small.render(def_text, True, COLOR_PLAYER2)
+                def_color = self.get_player_color(dice.defender_player)
+                def_surface = self.font_small.render(def_text, True, def_color)
                 self.screen.blit(def_surface, (x_offset, panel_y + 8))
 
     def draw_turn_indicator(self, game: 'Game'):
@@ -754,11 +773,11 @@ class UIMixin:
         elif controlled_player == 1:
             text = "TAB: Игрок 1"
             bg_color = (35, 65, 90)
-            border_color = COLOR_PLAYER1
+            border_color = self.get_player_color(1)
         else:
             text = "TAB: Игрок 2"
             bg_color = (90, 35, 35)
-            border_color = COLOR_PLAYER2
+            border_color = self.get_player_color(2)
 
         text_surface = self.font_small.render(text, True, COLOR_TEXT)
         padding = scaled(6)
@@ -778,6 +797,18 @@ class UIMixin:
             scaled(UILayout.END_TURN_WIDTH),
             scaled(UILayout.END_TURN_HEIGHT)
         )
+
+    def _all_creatures_tapped(self, game: 'Game', player: int) -> bool:
+        """Check if all of a player's creatures are tapped (cannot act)."""
+        has_any = False
+        for pos in range(36):  # Main board + flying zones
+            card = game.board.get_card(pos)
+            if card and card.player == player:
+                has_any = True
+                # Check if creature can still act (untapped)
+                if not card.tapped:
+                    return False
+        return has_any  # True only if has creatures and all are tapped
 
     def get_skip_button_rect(self) -> pygame.Rect:
         """Get the skip button rectangle for click detection."""

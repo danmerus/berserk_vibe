@@ -36,6 +36,9 @@ COLOR_BOARD_DARK = (50, 50, 60)
 COLOR_GRID_LINE = (80, 80, 90)
 COLOR_PLAYER1 = (70, 130, 180)  # Steel blue
 COLOR_PLAYER2 = (180, 70, 70)   # Indian red
+# Perspective-based colors (used when rendering from a player's viewpoint)
+COLOR_SELF = (70, 130, 180)     # Blue for "your" cards
+COLOR_OPPONENT = (180, 70, 70)  # Red for opponent's cards
 COLOR_SELECTED = (255, 215, 0)  # Gold
 COLOR_MOVE_HIGHLIGHT = (100, 200, 100, 128)  # Green transparent
 COLOR_ATTACK_HIGHLIGHT = (200, 100, 100, 128)  # Red transparent

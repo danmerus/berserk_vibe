@@ -342,8 +342,13 @@ class AbilitiesMixin:
         return True
 
     def _apply_lunge_front_buff(self, attacker: 'Card'):
-        """Apply +1 dice roll buff to allied creature in front."""
+        """Apply dice roll buff to allied creature in front."""
+        from ..abilities import get_ability
         if attacker.position is None:
+            return
+
+        ability = get_ability("lunge_front_buff")
+        if not ability:
             return
 
         col = attacker.position % 5
@@ -361,8 +366,9 @@ class AbilitiesMixin:
         front_card = self.board.get_card(front_pos)
 
         if front_card and front_card.player == attacker.player:
-            front_card.temp_dice_bonus += 1
-            self.log(f"  -> {front_card.name} получил ОвА (+1 к броску)")
+            bonus = ability.ally_dice_bonus
+            front_card.temp_dice_bonus += bonus
+            self.log(f"  -> {front_card.name} получил ОвА (+{bonus} к броску)")
 
     # =========================================================================
     # RANGED ATTACK

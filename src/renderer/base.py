@@ -9,7 +9,7 @@ from ..constants import (
     BOARD_COLS, BOARD_ROWS, CELL_SIZE, BOARD_OFFSET_X, BOARD_OFFSET_Y,
     CARD_WIDTH, CARD_HEIGHT,
     COLOR_BG, COLOR_BOARD_LIGHT, COLOR_BOARD_DARK, COLOR_GRID_LINE,
-    COLOR_PLAYER1, COLOR_PLAYER2, COLOR_SELECTED,
+    COLOR_SELECTED, COLOR_SELF, COLOR_OPPONENT,
     COLOR_MOVE_HIGHLIGHT, COLOR_ATTACK_HIGHLIGHT,
     COLOR_TEXT, COLOR_TEXT_DARK, COLOR_HP_BAR, COLOR_HP_BAR_BG,
     GamePhase, scaled, UI_SCALE, UILayout
@@ -104,6 +104,9 @@ class RendererBase:
         self.counter_shot_highlight = pygame.Surface((CELL_SIZE, CELL_SIZE), pygame.SRCALPHA)
         self.counter_shot_highlight.fill((255, 140, 50, 150))
 
+        # Cache for interaction highlights (created from config colors)
+        self._interaction_highlights: dict = {}
+
         # Highlights for flying zones in side panels (same size as panel cards)
         fly_size = scaled(UILayout.SIDE_PANEL_CARD_SIZE)
         self.move_highlight_fly = pygame.Surface((fly_size, fly_size), pygame.SRCALPHA)
@@ -136,6 +139,22 @@ class RendererBase:
         """Handle window resize event."""
         self.window = new_window
         self._update_scale()
+
+    def _get_interaction_highlight(self, kind: 'InteractionKind') -> Optional[pygame.Surface]:
+        """Get or create highlight surface for an interaction type using config color."""
+        from ..interaction import get_interaction_config, InteractionKind
+
+        if kind in self._interaction_highlights:
+            return self._interaction_highlights[kind]
+
+        config = get_interaction_config(kind)
+        if not config.highlight_color:
+            return None
+
+        highlight = pygame.Surface((CELL_SIZE, CELL_SIZE), pygame.SRCALPHA)
+        highlight.fill(config.highlight_color)
+        self._interaction_highlights[kind] = highlight
+        return highlight
 
     def screen_to_game_coords(self, screen_x: int, screen_y: int) -> Tuple[int, int]:
         """Convert screen coordinates to game coordinates."""
@@ -300,6 +319,23 @@ class RendererBase:
     def _is_flying_pos(self, pos: int) -> bool:
         """Check if position is a flying zone."""
         return pos >= 30
+
+    def get_player_color(self, player: int) -> Tuple[int, int, int]:
+        """Get the display color for a player based on viewing perspective.
+
+        Colors are always blue for "your" cards and red for opponent's cards,
+        regardless of which player number you are.
+
+        Args:
+            player: The player number (1 or 2) to get color for
+
+        Returns:
+            RGB color tuple (blue if it's the viewing player, red otherwise)
+        """
+        if player == self.viewing_player:
+            return COLOR_SELF  # Blue for your cards
+        else:
+            return COLOR_OPPONENT  # Red for opponent's cards
 
     def _get_highlight(self, highlight_normal: pygame.Surface, highlight_fly: pygame.Surface, pos: int) -> pygame.Surface:
         """Get appropriate highlight surface based on position type."""

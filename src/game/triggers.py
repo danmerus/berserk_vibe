@@ -232,6 +232,130 @@ class TriggersMixin:
         return self.interaction is not None and self.interaction.kind == InteractionKind.CONFIRM_HEAL
 
     # =========================================================================
+    # OPPONENT TURN UNTAP
+    # =========================================================================
+
+    def confirm_untap(self, accept: bool) -> bool:
+        """Player confirms or declines untapping at opponent's turn start."""
+        if not self.awaiting_untap_confirm:
+            return False
+
+        card = self.get_card_by_id(self.interaction.actor_id)
+        if not card:
+            self.interaction = None
+            return False
+
+        if accept:
+            card.untap()
+            self.log(f"{card.name} открылся")
+            from ..commands import evt_card_untapped
+            self.emit_event(evt_card_untapped(card.id))
+        else:
+            self.log(f"{card.name} остаётся закрытым")
+
+        self.interaction = None
+
+        # Check for more opponent turn start triggers
+        self._process_opponent_turn_start_triggers()
+
+        return True
+
+    @property
+    def awaiting_untap_confirm(self) -> bool:
+        """Check if waiting for untap confirmation (legacy popup)."""
+        return self.interaction is not None and self.interaction.kind == InteractionKind.CONFIRM_UNTAP
+
+    @property
+    def awaiting_select_untap(self) -> bool:
+        """Check if waiting for untap selection (click card to untap)."""
+        return self.interaction is not None and self.interaction.kind == InteractionKind.SELECT_UNTAP
+
+    def select_untap_target(self, pos: int) -> bool:
+        """Player selects a card to untap."""
+        if not self.awaiting_select_untap:
+            return False
+
+        if not self.interaction.can_select_position(pos):
+            return False
+
+        card = self.board.get_card(pos)
+        if not card:
+            return False
+
+        # Mark as offered so it won't be offered again this turn
+        self._untap_offered_this_turn.add(card.id)
+
+        # Untap the card
+        card.untap()
+        self.log(f"{card.name} открылся")
+        from ..commands import evt_card_untapped
+        self.emit_event(evt_card_untapped(card.id))
+
+        self.interaction = None
+
+        # Check for more untap opportunities
+        self._process_opponent_turn_start_triggers()
+
+        return True
+
+    def skip_select_untap(self):
+        """Skip untap selection - all remaining cards stay tapped."""
+        if not self.awaiting_select_untap:
+            return
+
+        # Mark all valid positions as offered so they won't be offered again
+        for pos in self.interaction.valid_positions:
+            card = self.board.get_card(pos)
+            if card:
+                self._untap_offered_this_turn.add(card.id)
+                self.log(f"{card.name} остаётся закрытым")
+
+        self.interaction = None
+
+    # =========================================================================
+    # GENERIC SELECTION DISPATCH
+    # =========================================================================
+
+    def resolve_position_selection(self, pos: int) -> bool:
+        """Generic handler for position-based selections. Dispatches based on interaction kind."""
+        if not self.interaction or not self.interaction.can_select_position(pos):
+            return False
+
+        kind = self.interaction.kind
+
+        if kind == InteractionKind.SELECT_COUNTER_SHOT:
+            return self.select_counter_shot_target(pos)
+        elif kind == InteractionKind.SELECT_MOVEMENT_SHOT:
+            return self.select_movement_shot_target(pos)
+        elif kind == InteractionKind.SELECT_VALHALLA_TARGET:
+            return self.select_valhalla_target(pos)
+        elif kind == InteractionKind.SELECT_ABILITY_TARGET:
+            return self.select_ability_target(pos)
+        elif kind == InteractionKind.SELECT_UNTAP:
+            return self.select_untap_target(pos)
+
+        return False
+
+    def skip_current_interaction(self) -> bool:
+        """Generic handler for skipping skippable interactions."""
+        if not self.interaction or not self.interaction.is_skippable:
+            return False
+
+        kind = self.interaction.kind
+
+        if kind == InteractionKind.SELECT_DEFENDER:
+            self.skip_defender()
+            return True
+        elif kind == InteractionKind.SELECT_MOVEMENT_SHOT:
+            self.skip_movement_shot()
+            return True
+        elif kind == InteractionKind.SELECT_UNTAP:
+            self.skip_select_untap()
+            return True
+
+        return False
+
+    # =========================================================================
     # HELLISH STENCH
     # =========================================================================
 

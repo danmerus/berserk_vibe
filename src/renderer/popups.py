@@ -4,7 +4,7 @@ from typing import Optional, Tuple, List, TYPE_CHECKING
 
 from ..constants import (
     WINDOW_WIDTH, WINDOW_HEIGHT,
-    COLOR_PLAYER1, COLOR_PLAYER2, COLOR_TEXT,
+    COLOR_SELF, COLOR_OPPONENT, COLOR_TEXT,
     scaled, UILayout
 )
 from ..card_database import get_card_image
@@ -101,10 +101,22 @@ class PopupsMixin:
             active_popups.append(('valhalla', 450, 80))
         if game.awaiting_counter_shot:
             active_popups.append(('counter_shot', 400, 60))
+        if game.awaiting_movement_shot:
+            active_popups.append(('movement_shot', 450, 95))
         if game.awaiting_heal_confirm:
             active_popups.append(('heal_confirm', 350, 90))
+        if game.awaiting_untap_confirm:
+            active_popups.append(('untap_confirm', 350, 90))
+        if game.awaiting_select_untap:
+            active_popups.append(('select_untap', 450, 80))
+        if game.awaiting_stench_choice:
+            active_popups.append(('stench_choice', 380, 90))
         if game.awaiting_exchange_choice:
             active_popups.append(('exchange', 320, 100))
+
+        # Waiting indicator (when opponent is deciding)
+        if game.interaction and game.interaction.acting_player != self.viewing_player:
+            active_popups.append(('waiting_opponent', 400, 60))
 
         for popup_id, width, height in active_popups:
             rect = self._get_popup_rect(popup_id, width, height, (WINDOW_WIDTH - width) // 2, 60)
@@ -211,17 +223,21 @@ class PopupsMixin:
         popup_y = (WINDOW_HEIGHT - popup_h) // 2
         popup_win_rect = self.game_to_window_rect(pygame.Rect(popup_x, popup_y, popup_w, popup_h))
 
-        # Winner text
+        # Winner text (blue if you won, red if opponent won)
         if self.game_over_winner == 0:
             title_text = "Ничья!"
             title_color = (200, 200, 200)
             winner_name = None
         else:
+            # Color based on viewer perspective: blue = you won, red = opponent won
+            if self.game_over_winner == self.viewing_player:
+                title_color = COLOR_SELF  # You won - blue
+            else:
+                title_color = COLOR_OPPONENT  # Opponent won - red
+
             if self.game_over_winner == 1:
-                title_color = COLOR_PLAYER1
                 winner_name = getattr(self, 'game_over_player1_name', None)
             else:
-                title_color = COLOR_PLAYER2
                 winner_name = getattr(self, 'game_over_player2_name', None)
 
             if winner_name:
@@ -293,7 +309,7 @@ class PopupsMixin:
     def _draw_dice_row(self, popup_x: int, y_offset: int, card: 'Card', roll: int,
                        modifier: int, bonus: int, btn_prefix: str):
         """Draw a single dice row with name, dice value, and modification buttons."""
-        color = COLOR_PLAYER1 if card.player == 1 else COLOR_PLAYER2
+        color = self.get_player_color(card.player)  # Blue for you, red for opponent
         total = roll + modifier + bonus
 
         # Draw card name
@@ -392,7 +408,7 @@ class PopupsMixin:
             y_offset += 55
         elif is_single_roll and target:
             # Show target info for ranged/magic attacks (read-only)
-            target_color = COLOR_PLAYER1 if target.player == 1 else COLOR_PLAYER2
+            target_color = self.get_player_color(target.player)  # Blue for you, red for opponent
             target_name_surface = self.font_medium.render(f"Цель: {target.name}", True, target_color)
             self.screen.blit(target_name_surface, (popup_x + 15, y_offset))
             y_offset += 35

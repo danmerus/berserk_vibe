@@ -183,7 +183,7 @@ class PriorityMixin:
                     dice.def_roll = new_roll
                 self.log(f"  -> {card.name}: Удача переброс {target_name} [{old_roll}] -> [{new_roll}]")
 
-            card.tap()
+            # Note: card.tap() was moved to use_instant_ability() so cards tap immediately when cast
 
     def use_instant_ability(self, card: 'Card', ability_id: str, option: str) -> bool:
         """Use an instant ability during priority phase."""
@@ -220,6 +220,11 @@ class PriorityMixin:
         if card.face_down:
             self.reveal_card(card)
 
+        # Tap the card immediately when casting the instant (not when it resolves)
+        card.tap()
+        from ..commands import evt_card_tapped
+        self.emit_event(evt_card_tapped(card.id))
+
         self.instant_stack.append(StackItem(
             card_id=card.id,
             ability_id=ability.id,
@@ -227,6 +232,18 @@ class PriorityMixin:
         ))
 
         self.log(f"{card.name}: Удача ({option})")
+
+        # Add arrow from luck card to the card whose dice is being modified
+        if ability_id == "luck" and self.pending_dice_roll:
+            dice = self.pending_dice_roll
+            target_is_attacker = option.startswith('atk_')
+            if target_is_attacker:
+                target_id = dice.attacker_id
+            else:
+                target_id = dice.defender_id if dice.defender_id else dice.target_id
+            target_card = self.board.get_card_by_id(target_id) if target_id else None
+            if target_card and target_card.position is not None and card.position is not None:
+                self.emit_arrow(card.position, target_card.position, 'luck')
 
         opponent = 2 if card.player == 1 else 1
         opponent_instants = self.get_legal_instants(opponent)

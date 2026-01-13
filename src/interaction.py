@@ -10,6 +10,17 @@ from enum import Enum, auto
 from typing import Optional, Tuple, Dict, Any
 
 
+@dataclass
+class InteractionConfig:
+    """Configuration for an interaction type - display and behavior settings."""
+    prompt_title: str = ""           # Title shown in prompt popup
+    prompt_text: str = ""            # Instruction text
+    waiting_text: str = ""           # Text shown to opponent waiting
+    highlight_color: Tuple[int, int, int, int] = (100, 100, 100, 150)
+    skippable: bool = False          # Can be skipped with Skip button
+    skip_log: str = ""               # Log message when skipped
+
+
 class InteractionKind(Enum):
     """Types of interactions that require user input."""
     # Combat-related
@@ -20,9 +31,11 @@ class InteractionKind(Enum):
     # Ability targeting
     SELECT_ABILITY_TARGET = auto()  # Choose target for ability
     SELECT_VALHALLA_TARGET = auto() # Choose ally for Valhalla buff
+    SELECT_UNTAP = auto()           # Select card to untap at opponent turn start
 
     # Confirmations and choices
     CONFIRM_HEAL = auto()           # Yes/No heal confirmation
+    CONFIRM_UNTAP = auto()          # Yes/No untap at opponent turn start (legacy)
     CHOOSE_STENCH = auto()          # Tap or take damage choice
     CHOOSE_EXCHANGE = auto()        # Full attack or reduced attack choice
 
@@ -80,6 +93,7 @@ class Interaction:
             InteractionKind.SELECT_COUNTER_SHOT,
             InteractionKind.SELECT_MOVEMENT_SHOT,
             InteractionKind.SELECT_VALHALLA_TARGET,
+            InteractionKind.SELECT_UNTAP,
         )
 
     @property
@@ -87,6 +101,7 @@ class Interaction:
         """Check if this interaction is a binary choice (yes/no, etc.)."""
         return self.kind in (
             InteractionKind.CONFIRM_HEAL,
+            InteractionKind.CONFIRM_UNTAP,
             InteractionKind.CHOOSE_STENCH,
             InteractionKind.CHOOSE_EXCHANGE,
         )
@@ -97,6 +112,7 @@ class Interaction:
         return self.kind in (
             InteractionKind.SELECT_DEFENDER,      # Can skip to not intercept
             InteractionKind.SELECT_MOVEMENT_SHOT, # Optional shot
+            InteractionKind.SELECT_UNTAP,         # Can skip to stay tapped
         )
 
     @property
@@ -205,7 +221,8 @@ def interaction_valhalla(
     source_id: int,
     valid_positions: Tuple[int, ...],
     valid_card_ids: Tuple[int, ...],
-    acting_player: int
+    acting_player: int,
+    ability_id: str = ""
 ) -> Interaction:
     """Create Valhalla target selection interaction."""
     return Interaction(
@@ -214,6 +231,7 @@ def interaction_valhalla(
         actor_id=source_id,
         valid_positions=valid_positions,
         valid_card_ids=valid_card_ids,
+        context={'ability_id': ability_id},
     )
 
 
@@ -230,6 +248,30 @@ def interaction_confirm_heal(
         actor_id=healer_id,
         target_id=target_id,
         context={'heal_amount': heal_amount},
+    )
+
+
+def interaction_confirm_untap(
+    card_id: int,
+    acting_player: int
+) -> Interaction:
+    """Create untap confirmation interaction (card owner chooses to untap at opponent's turn start)."""
+    return Interaction(
+        kind=InteractionKind.CONFIRM_UNTAP,
+        acting_player=acting_player,
+        actor_id=card_id,
+    )
+
+
+def interaction_select_untap(
+    valid_positions: Tuple[int, ...],
+    acting_player: int
+) -> Interaction:
+    """Create untap selection interaction - click a card to untap it or skip."""
+    return Interaction(
+        kind=InteractionKind.SELECT_UNTAP,
+        acting_player=acting_player,
+        valid_positions=valid_positions,
     )
 
 
@@ -291,3 +333,72 @@ def interaction_priority(
         kind=InteractionKind.PRIORITY,
         context=dice_context,
     )
+
+
+# Configuration for each interaction type - centralizes display and behavior settings
+INTERACTION_CONFIGS: Dict[InteractionKind, InteractionConfig] = {
+    InteractionKind.SELECT_DEFENDER: InteractionConfig(
+        prompt_title="ВЫБОР ЗАЩИТНИКА",
+        prompt_text="Выберите защитника (или пропустите)",
+        waiting_text="выбирает защитника...",
+        highlight_color=(0, 200, 200, 150),  # Cyan
+        skippable=True,
+        skip_log="Защита пропущена",
+    ),
+    InteractionKind.SELECT_COUNTER_SHOT: InteractionConfig(
+        prompt_title="ОТВЕТНЫЙ ВЫСТРЕЛ",
+        prompt_text="Выберите цель для выстрела",
+        waiting_text="выбирает цель выстрела...",
+        highlight_color=(255, 140, 50, 150),  # Orange
+    ),
+    InteractionKind.SELECT_MOVEMENT_SHOT: InteractionConfig(
+        prompt_title="ВЫСТРЕЛ",
+        prompt_text="Выберите цель (необязательно)",
+        waiting_text="решает: выстрелить?",
+        highlight_color=(255, 140, 50, 150),  # Orange
+        skippable=True,
+        skip_log="Выстрел пропущен",
+    ),
+    InteractionKind.SELECT_ABILITY_TARGET: InteractionConfig(
+        # No prompt - ability targeting is obvious from highlights
+        prompt_title="",
+        waiting_text="выбирает цель способности...",
+        highlight_color=(180, 100, 220, 150),  # Purple
+    ),
+    InteractionKind.SELECT_VALHALLA_TARGET: InteractionConfig(
+        prompt_title="ВАЛЬХАЛЛА",
+        prompt_text="Выберите союзника для усиления",
+        waiting_text="выбирает цель Вальхаллы...",
+        highlight_color=(255, 200, 100, 150),  # Gold
+        # Note: description is fetched from ability in the prompt renderer
+    ),
+    InteractionKind.SELECT_UNTAP: InteractionConfig(
+        prompt_title="ОТКРЫТИЕ",
+        prompt_text="Нажмите на карту чтобы открыть (или пропустите)",
+        waiting_text="выбирает карту для открытия...",
+        highlight_color=(100, 180, 255, 150),  # Light blue
+        skippable=True,
+        skip_log="Карты остаются закрытыми",
+    ),
+    InteractionKind.CONFIRM_HEAL: InteractionConfig(
+        prompt_title="ЛЕЧЕНИЕ",
+        waiting_text="решает: принять лечение?",
+    ),
+    InteractionKind.CONFIRM_UNTAP: InteractionConfig(
+        prompt_title="ОТКРЫТИЕ",
+        waiting_text="решает: открыться?",
+    ),
+    InteractionKind.CHOOSE_STENCH: InteractionConfig(
+        prompt_title="ЗЛОВОНИЕ",
+        waiting_text="решает: закрыться или получить урон?",
+    ),
+    InteractionKind.CHOOSE_EXCHANGE: InteractionConfig(
+        prompt_title="ОБМЕН УДАРАМИ",
+        waiting_text="выбирает обмен ударами...",
+    ),
+}
+
+
+def get_interaction_config(kind: InteractionKind) -> InteractionConfig:
+    """Get configuration for an interaction type."""
+    return INTERACTION_CONFIGS.get(kind, InteractionConfig())

@@ -7,7 +7,7 @@ from ..constants import (
     BOARD_COLS, BOARD_ROWS, CELL_SIZE, BOARD_OFFSET_X, BOARD_OFFSET_Y,
     CARD_WIDTH, CARD_HEIGHT,
     COLOR_BG, COLOR_BOARD_LIGHT, COLOR_BOARD_DARK, COLOR_GRID_LINE,
-    COLOR_PLAYER1, COLOR_PLAYER2, COLOR_SELECTED,
+    COLOR_SELECTED,
     COLOR_MOVE_HIGHLIGHT, COLOR_ATTACK_HIGHLIGHT,
     COLOR_TEXT, scaled, UI_SCALE, UILayout
 )
@@ -54,41 +54,22 @@ class BoardMixin:
         # Interaction target highlights
         is_acting = (game.interaction and game.interaction.acting_player == self.viewing_player)
 
-        if game.awaiting_defender and game.interaction and is_acting:
-            # Defender highlights - highlight cards that can defend
-            for card_id in game.interaction.valid_card_ids:
-                card = game.board.get_card_by_id(card_id)
-                if card and card.position is not None and not self._is_flying_pos(card.position):
-                    x, y = self.pos_to_screen(card.position)
-                    self.screen.blit(self.defender_highlight, (x, y))
-
-        elif game.awaiting_ability_target and game.interaction and is_acting:
-            # Ability target highlights (purple)
-            for pos in game.interaction.valid_positions:
-                if not self._is_flying_pos(pos):
-                    x, y = self.pos_to_screen(pos)
-                    self.screen.blit(self.ability_highlight, (x, y))
-
-        elif game.awaiting_counter_shot and game.interaction and is_acting:
-            # Counter shot target highlights (orange)
-            for pos in game.interaction.valid_positions:
-                if not self._is_flying_pos(pos):
-                    x, y = self.pos_to_screen(pos)
-                    self.screen.blit(self.counter_shot_highlight, (x, y))
-
-        elif game.awaiting_movement_shot and game.interaction and is_acting:
-            # Movement shot target highlights (orange)
-            for pos in game.interaction.valid_positions:
-                if not self._is_flying_pos(pos):
-                    x, y = self.pos_to_screen(pos)
-                    self.screen.blit(self.counter_shot_highlight, (x, y))
-
-        elif game.awaiting_valhalla and game.interaction and is_acting:
-            # Valhalla target highlights (gold)
-            for pos in game.interaction.valid_positions:
-                if not self._is_flying_pos(pos):
-                    x, y = self.pos_to_screen(pos)
-                    self.screen.blit(self.valhalla_highlight, (x, y))
+        if game.interaction and is_acting:
+            if game.awaiting_defender:
+                # Defender uses card_ids, not positions
+                for card_id in game.interaction.valid_card_ids:
+                    card = game.board.get_card_by_id(card_id)
+                    if card and card.position is not None and not self._is_flying_pos(card.position):
+                        x, y = self.pos_to_screen(card.position)
+                        self.screen.blit(self.defender_highlight, (x, y))
+            elif game.interaction.is_board_selection:
+                # Generic position-based highlights using config color
+                highlight = self._get_interaction_highlight(game.interaction.kind)
+                if highlight:
+                    for pos in game.interaction.valid_positions:
+                        if not self._is_flying_pos(pos):
+                            x, y = self.pos_to_screen(pos)
+                            self.screen.blit(highlight, (x, y))
 
     def draw_card(self, card: 'Card', x: int, y: int, selected: bool = False,
                   glow_intensity: float = 0.0, game: 'Game' = None, glow_color: tuple = None):
@@ -457,6 +438,12 @@ class BoardMixin:
                 elif card.id in defender_card_ids:
                     card_glow = glow_intensity
                     card_glow_color = (255, 80, 80)
+
+                # Check for Valhalla glow (gold)
+                valhalla_intensity = self.get_valhalla_glow_intensity(pos)
+                if valhalla_intensity > 0:
+                    card_glow = max(card_glow, valhalla_intensity)
+                    card_glow_color = (255, 200, 100)  # Gold color
 
                 self.draw_card(card, x_draw, y_draw, selected, card_glow, game, card_glow_color)
 

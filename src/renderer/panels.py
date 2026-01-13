@@ -4,7 +4,7 @@ import math
 from typing import Optional, List, TYPE_CHECKING
 
 from ..constants import (
-    COLOR_PLAYER1, COLOR_PLAYER2, COLOR_TEXT,
+    COLOR_SELF, COLOR_OPPONENT, COLOR_TEXT,
     scaled, UILayout
 )
 
@@ -63,8 +63,8 @@ class PanelsMixin:
             right_label_flyers = "Летающие П2"
             left_label_grave = "Кладбище П1"
             right_label_grave = "Кладбище П2"
-            left_color = COLOR_PLAYER1
-            right_color = COLOR_PLAYER2
+            left_color = COLOR_OPPONENT  # P1 content (opponent) on left = red
+            right_color = COLOR_SELF  # P2 content (yours) on right = blue
             left_flyer_panel = 'p1_flyers'
             right_flyer_panel = 'p2_flyers'
             left_grave_panel = 'p1_grave'
@@ -78,8 +78,8 @@ class PanelsMixin:
             right_label_flyers = "Летающие П1"
             left_label_grave = "Кладбище П2"
             right_label_grave = "Кладбище П1"
-            left_color = COLOR_PLAYER2
-            right_color = COLOR_PLAYER1
+            left_color = COLOR_OPPONENT  # P2 content (opponent) on left = red
+            right_color = COLOR_SELF  # P1 content (yours) on right = blue
             left_flyer_panel = 'p2_flyers'
             right_flyer_panel = 'p1_flyers'
             left_grave_panel = 'p2_grave'
@@ -132,8 +132,8 @@ class PanelsMixin:
         left_flyers_rect = pygame.Rect(left_panel_x, left_panel_y, panel_width, tab_height)
         self.side_panel_tab_rects[left_flyer_panel] = left_flyers_rect
 
-        left_bg = (80, 50, 50) if left_color == COLOR_PLAYER2 else (50, 60, 80)
-        left_bg_dark = (50, 35, 35) if left_color == COLOR_PLAYER2 else (30, 40, 50)
+        left_bg = (80, 50, 50) if left_color == COLOR_OPPONENT else (50, 60, 80)
+        left_bg_dark = (50, 35, 35) if left_color == COLOR_OPPONENT else (30, 40, 50)
         tab_color = left_bg if left_flyers_expanded else left_bg_dark
         pygame.draw.rect(self.screen, tab_color, left_flyers_rect)
         pygame.draw.rect(self.screen, left_color, left_flyers_rect, 2)
@@ -200,8 +200,8 @@ class PanelsMixin:
         right_flyers_rect = pygame.Rect(right_panel_x, right_panel_y, panel_width, tab_height)
         self.side_panel_tab_rects[right_flyer_panel] = right_flyers_rect
 
-        right_bg = (80, 50, 50) if right_color == COLOR_PLAYER2 else (50, 60, 80)
-        right_bg_dark = (50, 35, 35) if right_color == COLOR_PLAYER2 else (30, 40, 50)
+        right_bg = (80, 50, 50) if right_color == COLOR_OPPONENT else (50, 60, 80)
+        right_bg_dark = (50, 35, 35) if right_color == COLOR_OPPONENT else (30, 40, 50)
         tab_color = right_bg if right_flyers_expanded else right_bg_dark
         pygame.draw.rect(self.screen, tab_color, right_flyers_rect)
         pygame.draw.rect(self.screen, right_color, right_flyers_rect, 2)

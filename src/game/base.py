@@ -180,6 +180,9 @@ class GameBase:
         # Server-authoritative dice rolls
         self._pending_rolls: List[int] = []
 
+        # Track cards that have been offered untap this turn (to avoid re-prompting)
+        self._untap_offered_this_turn: set = set()
+
     def log(self, msg: str, emit_event: bool = True):
         """Add a message to the log."""
         self.messages.append(msg)
@@ -213,6 +216,7 @@ class GameBase:
             '_pending_rolls': self._pending_rolls,
             'messages': self.messages,
             'last_combat': self.last_combat.to_dict() if self.last_combat else None,
+            '_untap_offered_this_turn': list(self._untap_offered_this_turn),
         }
 
         if include_ui_state:
@@ -302,6 +306,7 @@ class GameBase:
         from ..interaction import Interaction
         game.interaction = Interaction.from_dict(data['interaction']) if data.get('interaction') else None
         game._pending_rolls = data.get('_pending_rolls', [])
+        game._untap_offered_this_turn = set(data.get('_untap_offered_this_turn', []))
 
         return game
 

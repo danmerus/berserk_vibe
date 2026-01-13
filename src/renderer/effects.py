@@ -218,6 +218,32 @@ class EffectsMixin:
             return x, y
         return base_x, base_y
 
+    def add_valhalla_glow(self, board_pos: int):
+        """Add a gold glow effect on a card that received a Valhalla buff."""
+        self.valhalla_glows.append({
+            'pos': board_pos,
+            'timer': 0.0,
+            'duration': 0.8,  # Glow duration in seconds
+        })
+
+    def update_valhalla_glows(self, dt: float):
+        """Update Valhalla glow animations."""
+        for glow in self.valhalla_glows:
+            glow['timer'] += dt
+        # Remove finished glows
+        self.valhalla_glows = [g for g in self.valhalla_glows if g['timer'] < g['duration']]
+
+    def get_valhalla_glow_intensity(self, board_pos: int) -> float:
+        """Get the glow intensity for a position (0.0 to 1.0). Returns 0 if no glow."""
+        for glow in self.valhalla_glows:
+            if glow['pos'] == board_pos:
+                # Pulse effect: fade in then fade out
+                t = glow['timer'] / glow['duration']
+                # Smooth pulse: sin curve that goes 0 -> 1 -> 0
+                intensity = math.sin(t * math.pi)
+                return intensity
+        return 0.0
+
     def clear_all_effects(self):
         """Clear all visual effects. Call when starting a new game."""
         self.card_animations.clear()
@@ -225,6 +251,7 @@ class EffectsMixin:
         self.arrows.clear()
         self.floating_texts.clear()
         self.death_animations.clear()
+        self.valhalla_glows.clear()
 
     def start_death_animation(self, card: 'Card', pos: int, visual_index: int = -1):
         """Start a death animation for a card.
@@ -258,7 +285,7 @@ class EffectsMixin:
 
     def _render_card_for_death(self, card: 'Card', pos: int) -> pygame.Surface:
         """Render a card surface for death animation."""
-        from ..constants import CARD_WIDTH, CARD_HEIGHT, COLOR_PLAYER1, COLOR_PLAYER2
+        from ..constants import CARD_WIDTH, CARD_HEIGHT
         from ..card_database import get_card_image
 
         # Create surface for the card
@@ -272,12 +299,18 @@ class EffectsMixin:
             scaled_img = pygame.transform.smoothscale(img, (CARD_WIDTH, CARD_HEIGHT))
             surface.blit(scaled_img, (0, 0))
         else:
-            # Fallback: solid color
-            color = COLOR_PLAYER1 if card.player == 1 else COLOR_PLAYER2
+            # Fallback: solid color (gold for you, blue for opponent - matching board)
+            if card.player == self.viewing_player:
+                color = (180, 150, 50)
+            else:
+                color = (70, 100, 160)
             surface.fill(color)
 
-        # Draw border
-        border_color = COLOR_PLAYER1 if card.player == 1 else COLOR_PLAYER2
+        # Draw border (gold for you, blue for opponent - matching board)
+        if card.player == self.viewing_player:
+            border_color = (180, 150, 50)
+        else:
+            border_color = (70, 100, 160)
         pygame.draw.rect(surface, border_color, surface.get_rect(), 2)
 
         return surface

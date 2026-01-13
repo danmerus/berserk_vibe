@@ -85,6 +85,7 @@ class NetworkClient:
     _command_seq: int = 0
     _server_seq: int = 0
     _last_command_time: float = 0.0  # Time of last command sent
+    _last_update_time: float = 0.0  # Time of last update received from server
     _pending_response: bool = False  # True if waiting for server response
     _resync_requested: bool = False  # True if we already requested resync for this timeout
 
@@ -228,6 +229,8 @@ class NetworkClient:
 
     # Timeout for command response before auto-resync (seconds)
     COMMAND_TIMEOUT = 3.0
+    # Timeout for any server activity before auto-resync (seconds)
+    INACTIVITY_TIMEOUT = 15.0
 
     def poll(self):
         """Process pending messages from network thread.
@@ -247,20 +250,33 @@ class NetworkClient:
 
     def _check_command_timeout(self):
         """Check if a command has timed out and request resync if needed."""
-        if not self._pending_response:
-            return
         if self._resync_requested:
             return
         if self.state != ClientState.IN_MATCH:
             return
 
-        elapsed = time.time() - self._last_command_time
-        if elapsed >= self.COMMAND_TIMEOUT:
-            logger.warning(f"Command timed out after {elapsed:.1f}s, requesting resync")
-            self._resync_requested = True
-            if self.on_resync_requested:
-                self.on_resync_requested()
-            self.request_resync()
+        now = time.time()
+
+        # Check for pending command timeout
+        if self._pending_response:
+            elapsed = now - self._last_command_time
+            if elapsed >= self.COMMAND_TIMEOUT:
+                logger.warning(f"Command timed out after {elapsed:.1f}s, requesting resync")
+                self._resync_requested = True
+                if self.on_resync_requested:
+                    self.on_resync_requested()
+                self.request_resync()
+                return
+
+        # Check for general inactivity (no updates from server)
+        if self._last_update_time > 0:
+            inactivity = now - self._last_update_time
+            if inactivity >= self.INACTIVITY_TIMEOUT:
+                logger.warning(f"No server activity for {inactivity:.1f}s, requesting resync")
+                self._resync_requested = True
+                if self.on_resync_requested:
+                    self.on_resync_requested()
+                self.request_resync()
 
     def _queue_message(self, msg: Optional[Message]):
         """Queue message for sending."""
@@ -330,6 +346,7 @@ class NetworkClient:
 
         elif msg_type == 'game_start':
             self.state = ClientState.IN_MATCH
+            self._last_update_time = time.time()
             if data.get('snapshot'):
                 self.game = Game.from_dict(data['snapshot'])
             if self.on_game_start:
@@ -339,6 +356,7 @@ class NetworkClient:
             # Response received, clear pending state
             self._pending_response = False
             self._resync_requested = False
+            self._last_update_time = time.time()
             # Reconstruct CommandResult
             result = CommandResult(
                 accepted=data.get('accepted', False),
@@ -356,6 +374,7 @@ class NetworkClient:
             # Resync received, clear pending state
             self._pending_response = False
             self._resync_requested = False
+            self._last_update_time = time.time()
             if data.get('snapshot'):
                 self.game = Game.from_dict(data['snapshot'])
                 if self.on_resync:

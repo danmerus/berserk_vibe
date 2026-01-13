@@ -199,6 +199,7 @@ class EventType(Enum):
     ABILITY_ACTIVATED = auto()
     ABILITY_RESOLVED = auto()
     INSTANT_USED = auto()
+    VALHALLA_APPLIED = auto()  # Valhalla buff applied to a card
 
     # Interactions (prompts for player input)
     INTERACTION_STARTED = auto()
@@ -307,6 +308,10 @@ def evt_card_damaged(card_id: int, amount: int, position: int = -1, source_id: O
 def evt_card_healed(card_id: int, amount: int, position: int = -1, source_id: Optional[int] = None) -> Event:
     """Card healed event. Position is stored for floating text consistency."""
     return Event(EventType.CARD_HEALED, card_id=card_id, amount=amount, position=position, source_id=source_id)
+
+def evt_valhalla_applied(card_id: int, position: int) -> Event:
+    """Valhalla buff applied to a card."""
+    return Event(EventType.VALHALLA_APPLIED, card_id=card_id, position=position)
 
 def evt_card_tapped(card_id: int) -> Event:
     return Event(EventType.CARD_TAPPED, card_id=card_id)

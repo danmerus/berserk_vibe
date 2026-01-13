@@ -292,6 +292,9 @@ class SetupMixin:
         self.last_combat = None
         self.cancel_ability()
 
+        # Clear untap offers tracking for new turn
+        self._untap_offered_this_turn.clear()
+
         self.log(f"Ход {self.turn_number}: Игрок {self.current_player}")
         self.emit_event(evt_turn_started(self.current_player, self.turn_number))
 
@@ -300,6 +303,9 @@ class SetupMixin:
 
         # Process turn start triggers
         self._process_turn_start_triggers()
+
+        # Process opponent's turn start triggers (like may untap)
+        self._process_opponent_turn_start_triggers()
 
         # Check for forced attacks
         self._update_forced_attackers()
@@ -316,7 +322,8 @@ class SetupMixin:
 
         if (self.awaiting_defender or self.awaiting_valhalla or
             self.awaiting_counter_shot or self.awaiting_heal_confirm or
-            self.awaiting_exchange_choice or self.awaiting_stench_choice):
+            self.awaiting_exchange_choice or self.awaiting_stench_choice or
+            self.awaiting_untap_confirm or self.awaiting_select_untap):
             return
 
         if self.has_forced_attack:
@@ -378,6 +385,8 @@ class SetupMixin:
         if not self.pending_valhalla:
             if self.interaction and self.interaction.kind == InteractionKind.SELECT_VALHALLA_TARGET:
                 self.interaction = None
+            # Now process opponent turn start triggers (e.g., untap choice)
+            self._process_opponent_turn_start_triggers()
             return
 
         dead_card_id, ability_id = self.pending_valhalla.pop(0)
@@ -401,8 +410,8 @@ class SetupMixin:
             valid_positions=tuple(c.position for c in allies),
             valid_card_ids=tuple(c.id for c in allies),
             acting_player=dead_card.player,
+            ability_id=ability_id,
         )
-        self.interaction.context['ability_id'] = ability_id
         self.log(f"Вальхалла {dead_card.name}: выберите существо")
 
     def select_valhalla_target(self, pos: int) -> bool:
@@ -422,11 +431,15 @@ class SetupMixin:
             return False
 
         if ability.id == "valhalla_ova":
-            target.temp_dice_bonus += ability.dice_bonus_attack
-            self.log(f"  -> {target.name} получил ОвА+{ability.dice_bonus_attack}")
+            target.temp_dice_bonus += ability.ally_dice_bonus
+            self.log(f"  -> {target.name} получил ОвА+{ability.ally_dice_bonus}")
         elif ability.id == "valhalla_strike":
             target.temp_attack_bonus += ability.damage_bonus
             self.log(f"  -> {target.name} получил +{ability.damage_bonus} к удару")
+
+        # Emit event for visual effect
+        from ..commands import evt_valhalla_applied
+        self.emit_event(evt_valhalla_applied(target.id, pos))
 
         self.interaction = None
         self._process_next_valhalla()
@@ -455,6 +468,43 @@ class SetupMixin:
                             handler(self, card, ability, ctx)
                         else:
                             self._execute_triggered_ability(card, ability)
+
+    def _process_opponent_turn_start_triggers(self):
+        """Process ON_OPPONENT_TURN_START triggered abilities (opponent's cards).
+
+        This checks if the opponent has any tapped cards with abilities that
+        can trigger at the start of this player's turn (e.g., may untap).
+        Uses the selection system - player clicks card to untap or Skip to decline.
+        """
+        # Don't overwrite pending Valhalla interaction
+        if self.awaiting_valhalla or self.pending_valhalla:
+            return
+
+        from ..interaction import interaction_select_untap
+
+        opponent = 3 - self.current_player  # 1 -> 2, 2 -> 1
+
+        # Find all tapped cards with opponent_untap ability
+        valid_positions = []
+        for card in self.board.get_all_cards(opponent):
+            if not card.tapped:
+                continue
+            if card.id in self._untap_offered_this_turn:
+                continue
+
+            for ability_id in card.stats.ability_ids:
+                ability = get_ability(ability_id)
+                if ability and ability.ability_type == AbilityType.TRIGGERED:
+                    if ability.trigger == AbilityTrigger.ON_OPPONENT_TURN_START:
+                        valid_positions.append(card.position)
+                        break
+
+        if valid_positions:
+            self.interaction = interaction_select_untap(
+                valid_positions=tuple(valid_positions),
+                acting_player=opponent,
+            )
+            self.log(f"Игрок {opponent}: выберите карту для открытия (или пропустите)")
 
     def _execute_triggered_ability(self, card: Card, ability: 'Ability'):
         """Execute a triggered ability automatically (fallback for unregistered triggers)."""

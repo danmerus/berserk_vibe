@@ -133,6 +133,18 @@ class NetworkGameHandler(StateHandler):
                 self._send_command(cmd_confirm(player, False))
             return None
 
+        elif event.key == pygame.K_y and game.awaiting_untap_confirm:
+            acting = game.interaction.acting_player if game.interaction else game.current_player
+            if acting == player:
+                self._send_command(cmd_confirm(player, True))
+            return None
+
+        elif event.key == pygame.K_n and game.awaiting_untap_confirm:
+            acting = game.interaction.acting_player if game.interaction else game.current_player
+            if acting == player:
+                self._send_command(cmd_confirm(player, False))
+            return None
+
         elif event.key == pygame.K_F5:
             if network_client:
                 if chat:

@@ -21,7 +21,7 @@ from typing import Optional, Dict, List, TYPE_CHECKING
 from ..constants import (
     WINDOW_WIDTH, WINDOW_HEIGHT,
     CELL_SIZE, CARD_WIDTH, CARD_HEIGHT,
-    COLOR_BG, COLOR_TEXT, COLOR_PLAYER1, COLOR_PLAYER2,
+    COLOR_BG, COLOR_TEXT,
     COLOR_MOVE_HIGHLIGHT, COLOR_ATTACK_HIGHLIGHT,
     GamePhase, scaled, UI_SCALE, UILayout
 )
@@ -101,14 +101,11 @@ class Renderer(
         # Floating numbers (damage/heal effects)
         self.floating_texts: List[dict] = []
 
-        # Heal confirmation buttons
-        self.heal_confirm_buttons: List[tuple] = []
+        # Choice prompt buttons (unified storage for all two-option prompts)
+        self.choice_buttons: Dict[str, List[tuple]] = {}
 
-        # Exchange choice buttons
+        # Exchange choice buttons (complex multi-line, kept separate)
         self.exchange_buttons: List[tuple] = []
-
-        # Stench choice buttons
-        self.stench_choice_buttons: List[tuple] = []
 
         # Draggable popup state
         self.popup_positions: Dict[str, tuple] = {}
@@ -117,6 +114,9 @@ class Renderer(
 
         # Interaction arrows
         self.arrows: List[dict] = []
+
+        # Valhalla glow effects (gold glow on buffed cards)
+        self.valhalla_glows: List[dict] = []
 
         # Priority phase animation
         self.priority_glow_timer: float = 0.0
@@ -429,6 +429,7 @@ class Renderer(
         self.draw_floating_texts(game)
         self.update_arrows(dt)
         self.draw_arrows(game)
+        self.update_valhalla_glows(dt)
 
         self.draw_popup()
 

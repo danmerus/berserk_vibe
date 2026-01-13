@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Callable
 
 from .text_input import TextInput, draw_text_input_field
-from .constants import COLOR_TEXT, COLOR_BG, COLOR_PLAYER1, COLOR_PLAYER2
+from .constants import COLOR_TEXT, COLOR_BG, COLOR_SELF, COLOR_OPPONENT
 
 
 @dataclass
@@ -188,31 +188,18 @@ class ChatUI:
                     screen.blit(text_surface, (text_x, y))
             else:
                 # Regular message
-                # Name color based on player number
+                # Name color based on player number (blue for you, red for opponent)
                 if msg.player_number == self.my_player_number:
-                    name_color = COLOR_PLAYER1
+                    name_color = COLOR_SELF
                 else:
-                    name_color = COLOR_PLAYER2
+                    name_color = COLOR_OPPONENT
 
                 # Render name and text
                 name_surface = self.font_small.render(f"{msg.player_name}: ", True, name_color)
 
-                # Word wrap the text
+                # Word wrap the text (handles long strings without spaces)
                 max_text_width = self.width - 12 - name_surface.get_width()
-                words = msg.text.split()
-                lines = []
-                current_line = ""
-
-                for word in words:
-                    test_line = current_line + (" " if current_line else "") + word
-                    test_surface = self.font_small.render(test_line, True, COLOR_TEXT)
-                    if test_surface.get_width() <= max_text_width or not current_line:
-                        current_line = test_line
-                    else:
-                        lines.append(current_line)
-                        current_line = word
-                if current_line:
-                    lines.append(current_line)
+                lines = self._wrap_text(msg.text, max_text_width)
 
                 # Draw lines (bottom to top)
                 for i, line in enumerate(reversed(lines)):
@@ -256,3 +243,48 @@ class ChatUI:
     def is_input_focused(self) -> bool:
         """Check if the text input is currently focused."""
         return self.text_input.active
+
+    def _wrap_text(self, text: str, max_width: int) -> List[str]:
+        """Wrap text to fit within max_width, breaking long words if needed."""
+        if not self.font_small:
+            return [text]
+
+        words = text.split()
+        lines = []
+        current_line = ""
+
+        for word in words:
+            # Check if word itself is too long
+            word_surface = self.font_small.render(word, True, COLOR_TEXT)
+            if word_surface.get_width() > max_width:
+                # Word is too long, need to break it character by character
+                if current_line:
+                    lines.append(current_line)
+                    current_line = ""
+
+                # Break long word
+                current_word = ""
+                for char in word:
+                    test_word = current_word + char
+                    test_surface = self.font_small.render(test_word, True, COLOR_TEXT)
+                    if test_surface.get_width() > max_width and current_word:
+                        lines.append(current_word)
+                        current_word = char
+                    else:
+                        current_word = test_word
+                if current_word:
+                    current_line = current_word
+            else:
+                # Normal word, try to add to current line
+                test_line = current_line + (" " if current_line else "") + word
+                test_surface = self.font_small.render(test_line, True, COLOR_TEXT)
+                if test_surface.get_width() <= max_width or not current_line:
+                    current_line = test_line
+                else:
+                    lines.append(current_line)
+                    current_line = word
+
+        if current_line:
+            lines.append(current_line)
+
+        return lines if lines else [""]
