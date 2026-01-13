@@ -104,17 +104,18 @@ class PlacementRenderer:
         """Convert board position to screen coordinates.
 
         For Player 2, the board is flipped so their positions appear at the bottom.
+        Columns are NOT flipped - must match main game renderer.
         """
         row = pos // BOARD_COLS
         col = pos % BOARD_COLS
 
         if self._current_player == 2:
-            # Flip board for P2: row 5 at bottom, row 0 at top
-            # Also flip columns so board looks mirrored
+            # P2: row 5 at bottom, row 0 at top (no row flip needed)
+            # Columns stay the same as game coordinates
             display_row = row
-            display_col = BOARD_COLS - 1 - col
+            display_col = col
         else:
-            # Normal: row 0 at bottom
+            # P1: row 0 at bottom (rows flipped), columns stay same
             display_row = BOARD_ROWS - 1 - row
             display_col = col
 
@@ -133,11 +134,11 @@ class PlacementRenderer:
         display_row = (screen_y - BOARD_OFFSET_Y) // CELL_SIZE
 
         if self._current_player == 2:
-            # Flip back for P2
+            # P2: no flip needed - display coords match game coords
             row = display_row
-            col = BOARD_COLS - 1 - display_col
+            col = display_col
         else:
-            # Normal: flip row back
+            # P1: flip row back, columns stay same
             row = BOARD_ROWS - 1 - display_row
             col = display_col
 

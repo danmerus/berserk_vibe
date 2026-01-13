@@ -13,16 +13,34 @@ import subprocess
 import sys
 import socket
 import atexit
+import threading
+import asyncio
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional, List, Callable, Dict
 from enum import Enum, auto
 
 # Global reference for cleanup on exit
 _active_server_process = None
+_active_server_thread = None
+_active_server_instance = None
+_server_loop = None
+_server_ready = None  # threading.Event to signal server is ready
+_server_error = None  # Store any startup error
+_active_bore_tunnel = None  # Track bore tunnel for cleanup
 
 def _cleanup_server_on_exit():
-    """Kill server process when Python exits."""
-    global _active_server_process
+    """Kill server process/thread and tunnel when Python exits."""
+    global _active_server_process, _active_server_instance, _server_loop, _active_bore_tunnel
+
+    # Stop bore tunnel first
+    if _active_bore_tunnel:
+        try:
+            _active_bore_tunnel.stop()
+        except:
+            pass
+
+    # Stop subprocess if running
     if _active_server_process and _active_server_process.poll() is None:
         try:
             _active_server_process.terminate()
@@ -33,7 +51,69 @@ def _cleanup_server_on_exit():
             except:
                 pass
 
+    # Stop threaded server if running
+    if _active_server_instance and _server_loop:
+        try:
+            _server_loop.call_soon_threadsafe(_server_loop.stop)
+        except:
+            pass
+
 atexit.register(_cleanup_server_on_exit)
+
+
+def _run_server_in_thread(port: int, ready_event: threading.Event):
+    """Run the game server in a background thread (for frozen exe)."""
+    global _active_server_instance, _server_loop, _server_error
+    import traceback
+
+    _server_error = None
+
+    try:
+        from .network.server import GameServer
+    except Exception as e:
+        _server_error = f"Import error: {e}\n{traceback.format_exc()}"
+        ready_event.set()
+        return
+
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        _server_loop = loop
+
+        server = GameServer(host='0.0.0.0', port=port)
+        _active_server_instance = server
+
+        # Create a wrapper that signals when server is bound
+        async def start_and_signal():
+            # Start the server (binds to port)
+            ssl_ctx = server._create_ssl_context()
+            server._server = await asyncio.start_server(
+                server._handle_connection,
+                server.host,
+                server.port,
+                ssl=ssl_ctx,
+                reuse_address=True,
+            )
+            server._running = True
+
+            # Signal that server is ready
+            ready_event.set()
+
+            # Start background tasks
+            asyncio.create_task(server._heartbeat_loop())
+            asyncio.create_task(server._cleanup_loop())
+
+            # Serve forever
+            async with server._server:
+                await server._server.serve_forever()
+
+        loop.run_until_complete(start_and_signal())
+    except Exception as e:
+        _server_error = f"{e}\n{traceback.format_exc()}"
+        ready_event.set()  # Signal even on error so main thread doesn't wait forever
+    finally:
+        if _server_loop and not _server_loop.is_closed():
+            _server_loop.close()
 
 
 def _kill_process_on_port(port: int) -> bool:
@@ -68,10 +148,10 @@ def _kill_process_on_port(port: int) -> bool:
 
 
 def _is_port_available(port: int) -> bool:
-    """Check if a port is available."""
+    """Check if a port is available on all interfaces."""
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(('127.0.0.1', port))
+            s.bind(('0.0.0.0', port))
             return True
     except OSError:
         return False
@@ -441,7 +521,10 @@ class NetworkUI:
 
     def _draw_server_info(self, center_x: int, y: int) -> int:
         """Draw server connection info with clickable copy. Returns new y position."""
-        if not self.server_process or self.server_process.poll() is not None:
+        # Check if server is running (subprocess or thread)
+        subprocess_running = self.server_process and self.server_process.poll() is None
+        thread_running = _active_server_thread and _active_server_thread.is_alive()
+        if not subprocess_running and not thread_running:
             return y
 
         # Show tunnel status/URL first (primary way to connect)
@@ -477,7 +560,9 @@ class NetworkUI:
 
         # Show LAN IP as secondary option
         if self.cached_local_ip:
-            port = '7777'
+            # Get actual port from server address
+            parts = self.server_address.split(':')
+            port = parts[1] if len(parts) > 1 else '7777'
             ip_addr = f"{self.cached_local_ip}:{port}"
             lan_label = self.font_small.render("LAN:", True, (100, 100, 100))
             lan_text = self.font_small.render(ip_addr, True, (150, 150, 150))
@@ -815,7 +900,7 @@ class NetworkUI:
 
     def _start_local_server(self):
         """Start a local game server."""
-        global _active_server_process
+        global _active_server_process, _active_server_thread
 
         # Check instance server first
         if self.server_process and self.server_process.poll() is None:
@@ -829,57 +914,116 @@ class NetworkUI:
             self.status_message = "Сервер уже запущен"
             return
 
+        # Check threaded server (from frozen exe)
+        if _active_server_thread and _active_server_thread.is_alive() and _active_server_instance:
+            self.status_message = "Сервер уже запущен"
+            return
+
+        # Clean up dead thread references
+        if _active_server_thread and not _active_server_thread.is_alive():
+            _active_server_thread = None
+            _active_server_instance = None
+
         try:
-            # Use default port
-            port = 7777
+            # Try multiple ports
+            ports_to_try = [7777, 7778, 7779, 7780]
+            port = None
 
-            # Kill any existing process on the port
-            if not _is_port_available(port):
-                self.status_message = "Освобождение порта..."
-                _kill_process_on_port(port)
-                time.sleep(0.3)
+            for try_port in ports_to_try:
+                if _is_port_available(try_port):
+                    port = try_port
+                    break
+                else:
+                    # Try to kill process on port
+                    self.status_message = f"Освобождение порта {try_port}..."
+                    _kill_process_on_port(try_port)
+                    time.sleep(0.3)
+                    if _is_port_available(try_port):
+                        port = try_port
+                        break
 
-                # Check again
-                if not _is_port_available(port):
-                    self.error_message = f"Порт {port} занят другим приложением"
+            if port is None:
+                self.error_message = "Все порты (7777-7780) заняты"
+                return
+
+            # Check if running from frozen exe (PyInstaller)
+            is_frozen = getattr(sys, 'frozen', False)
+
+            if is_frozen:
+                global _server_ready, _server_error
+                # Create event to wait for server to be ready
+                _server_ready = threading.Event()
+                _server_error = None
+
+                # Run server in a background thread (subprocess won't work in frozen exe)
+                _active_server_thread = threading.Thread(
+                    target=_run_server_in_thread,
+                    args=(port, _server_ready),
+                    daemon=True
+                )
+                _active_server_thread.start()
+
+                # Wait for server to signal it's ready (with timeout)
+                if not _server_ready.wait(timeout=3.0):
+                    self.error_message = "Таймаут запуска сервера"
                     return
 
-            # Start server as subprocess (hidden window, capture errors)
-            creation_flags = 0
-            startupinfo = None
-            if sys.platform == 'win32':
-                creation_flags = subprocess.CREATE_NO_WINDOW
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                # Check if server had an error during startup
+                if _server_error:
+                    # Log full error to file for debugging
+                    try:
+                        log_path = Path.home() / ".berserk_vibe" / "server_error.log"
+                        log_path.parent.mkdir(parents=True, exist_ok=True)
+                        with open(log_path, 'w', encoding='utf-8') as f:
+                            f.write(_server_error)
+                    except:
+                        pass
+                    # Show first line of error in UI
+                    first_line = _server_error.split('\n')[0]
+                    self.error_message = f"Ошибка сервера: {first_line[:80]}"
+                    return
 
-            self.server_process = subprocess.Popen(
-                [sys.executable, '-m', 'src.network.server', '--port', str(port)],
-                creationflags=creation_flags,
-                startupinfo=startupinfo,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
+                # Double-check the port is actually in use
+                if _is_port_available(port):
+                    self.error_message = "Не удалось запустить сервер"
+                    return
+            else:
+                # Development mode: start server as subprocess
+                creation_flags = 0
+                startupinfo = None
+                if sys.platform == 'win32':
+                    creation_flags = subprocess.CREATE_NO_WINDOW
+                    startupinfo = subprocess.STARTUPINFO()
+                    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
 
-            # Wait a moment for server to start
-            time.sleep(0.5)
+                self.server_process = subprocess.Popen(
+                    [sys.executable, '-m', 'src.network.server', '--port', str(port)],
+                    creationflags=creation_flags,
+                    startupinfo=startupinfo,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
 
-            # Check if server crashed immediately
-            if self.server_process.poll() is not None:
-                # Try to get error output
-                _, stderr = self.server_process.communicate(timeout=1)
-                error_text = stderr.decode('utf-8', errors='ignore').strip() if stderr else ""
-                if error_text:
-                    self.error_message = f"Ошибка сервера: {error_text[:100]}"
-                else:
-                    self.error_message = f"Сервер завершился с кодом {self.server_process.returncode}"
-                self.server_process = None
-                return
+                # Wait a moment for server to start
+                time.sleep(0.5)
+
+                # Check if server crashed immediately
+                if self.server_process.poll() is not None:
+                    # Try to get error output
+                    _, stderr = self.server_process.communicate(timeout=1)
+                    error_text = stderr.decode('utf-8', errors='ignore').strip() if stderr else ""
+                    if error_text:
+                        self.error_message = f"Ошибка сервера: {error_text[:100]}"
+                    else:
+                        self.error_message = f"Сервер завершился с кодом {self.server_process.returncode}"
+                    self.server_process = None
+                    return
+
+                # Store global reference for cleanup on exit
+                _active_server_process = self.server_process
 
             # Set address to localhost for auto-connect
             self.inputs['server'].set_value(f"localhost:{port}")
-
-            # Store global reference for cleanup on exit
-            _active_server_process = self.server_process
 
             # Cache LAN IP for display
             self.cached_local_ip = self._get_local_ip()
@@ -899,11 +1043,12 @@ class NetworkUI:
 
     def _stop_local_server(self):
         """Stop the local game server."""
-        global _active_server_process
+        global _active_server_process, _active_server_instance, _server_loop, _active_server_thread
 
         # Stop tunnel first
         self._stop_tunnel()
 
+        # Stop subprocess server
         if self.server_process:
             self.server_process.terminate()
             try:
@@ -915,13 +1060,30 @@ class NetworkUI:
             self.cached_local_ip = ""
             self.status_message = "Сервер остановлен"
 
+        # Stop threaded server (for frozen exe)
+        if _active_server_instance and _server_loop:
+            try:
+                _server_loop.call_soon_threadsafe(_server_loop.stop)
+            except:
+                pass
+            _active_server_instance = None
+            _server_loop = None
+            _active_server_thread = None
+            self.cached_local_ip = ""
+            self.status_message = "Сервер остановлен"
+
     def _start_tunnel(self):
         """Start bore tunnel for internet access (no signup required)."""
         if self.bore_tunnel and self.bore_tunnel.is_running:
             self.status_message = "Туннель уже запущен"
             return
 
-        if not self.server_process or self.server_process.poll() is not None:
+        # Check if server is running (either subprocess or threaded)
+        server_running = (
+            (self.server_process and self.server_process.poll() is None) or
+            (_active_server_instance is not None)
+        )
+        if not server_running:
             self.error_message = "Сначала запустите сервер"
             return
 
@@ -939,17 +1101,20 @@ class NetworkUI:
                 return
 
         # Create and start tunnel
+        global _active_bore_tunnel
         self.tunnel_status = "Создание туннеля..."
         self.bore_tunnel = BoreTunnel(
             port=port,
             on_url_ready=self._on_tunnel_ready,
             on_error=self._on_tunnel_error,
         )
+        _active_bore_tunnel = self.bore_tunnel  # Track for cleanup on exit
 
         if not self.bore_tunnel.start():
             self.error_message = self.bore_tunnel.error or "Не удалось запустить туннель"
             self.tunnel_status = ""
             self.bore_tunnel = None
+            _active_bore_tunnel = None
 
     def _on_tunnel_ready(self, url: str):
         """Called when bore tunnel URL is ready."""
@@ -965,9 +1130,11 @@ class NetworkUI:
 
     def _stop_tunnel(self):
         """Stop the bore tunnel."""
+        global _active_bore_tunnel
         if self.bore_tunnel:
             self.bore_tunnel.stop()
             self.bore_tunnel = None
+            _active_bore_tunnel = None
         self.tunnel_url = ""
         self.tunnel_status = ""
 

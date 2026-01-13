@@ -1,11 +1,45 @@
 """Deck builder for creating and managing card decks."""
 import json
 import os
+import sys
 import base64
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 from .card_database import CARD_DATABASE
+
+
+# User decks directory (writable, persists across sessions)
+USER_DECKS_DIR = Path.home() / ".berserk_vibe" / "decks"
+
+# Bundled decks directory (read-only starter decks)
+def get_bundled_decks_dir() -> Optional[str]:
+    """Get path to bundled decks (may be inside PyInstaller bundle)."""
+    paths = [
+        os.path.join(os.path.dirname(__file__), '..', 'data', 'decks'),
+        'data/decks',
+    ]
+    if hasattr(sys, '_MEIPASS'):
+        paths.insert(0, os.path.join(sys._MEIPASS, 'data', 'decks'))
+
+    for path in paths:
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def is_bundled_deck(filepath: str) -> bool:
+    """Check if a deck file is from the bundled (read-only) directory."""
+    if not filepath:
+        return False
+    bundled_dir = get_bundled_decks_dir()
+    if not bundled_dir:
+        return False
+    # Normalize paths for comparison
+    filepath_norm = os.path.normpath(os.path.abspath(filepath))
+    bundled_norm = os.path.normpath(os.path.abspath(bundled_dir))
+    return filepath_norm.startswith(bundled_norm)
 
 
 # Maximum copies of a single card in deck
@@ -142,11 +176,11 @@ class DeckBuilder:
         self.name = name
         self.clear()
 
-    def save(self, directory: str = "data/decks", new_name: str = None) -> bool:
+    def save(self, directory: str = None, new_name: str = None) -> bool:
         """Save deck to JSON file.
 
         Args:
-            directory: Directory to save to
+            directory: Directory to save to (defaults to user decks dir)
             new_name: Optional new name for the deck
 
         Returns True if successful, False if protected or error.
@@ -154,6 +188,10 @@ class DeckBuilder:
         # Protected decks cannot be modified - must save as new deck
         if self._protected and not new_name:
             return False
+
+        # Default to user decks directory (writable)
+        if directory is None:
+            directory = str(USER_DECKS_DIR)
 
         try:
             os.makedirs(directory, exist_ok=True)
@@ -212,6 +250,7 @@ class DeckBuilder:
         """Load deck from JSON file.
 
         Returns True if successful.
+        Bundled decks are automatically marked as protected.
         """
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
@@ -219,7 +258,9 @@ class DeckBuilder:
 
             self.name = data.get("name", "Загруженная колода")
             self.cards.clear()
-            self._protected = data.get("protected", False)
+
+            # Mark as protected if explicitly set OR if from bundled directory
+            self._protected = data.get("protected", False) or is_bundled_deck(filepath)
 
             for card_data in data.get("cards", []):
                 card_name = card_data.get("name")
@@ -242,12 +283,17 @@ class DeckBuilder:
         """Delete the current deck file.
 
         Returns True if successful, False if protected or error.
+        Bundled decks cannot be deleted.
         """
         if not self.file_path or not os.path.exists(self.file_path):
             return False
 
         # Don't delete protected decks - check both in-memory and file
         if self._protected:
+            return False
+
+        # Never delete bundled decks (extra safety)
+        if is_bundled_deck(self.file_path):
             return False
 
         # Extra safety: always check the file directly before deleting
@@ -317,16 +363,35 @@ class DeckBuilder:
             return False
 
     @staticmethod
-    def list_saved_decks(directory: str = "data/decks") -> List[str]:
-        """Get list of saved deck file paths."""
-        if not os.path.exists(directory):
-            return []
+    def list_saved_decks(directory: str = None) -> List[str]:
+        """Get list of saved deck file paths.
 
-        decks = []
-        for filename in os.listdir(directory):
-            if filename.endswith('.json'):
-                decks.append(os.path.join(directory, filename))
-        return sorted(decks)
+        Searches both user decks directory and bundled decks directory.
+        User decks take precedence if same filename exists in both.
+        """
+        decks = {}  # filename -> full path (user decks override bundled)
+
+        # First, add bundled decks (read-only starter decks)
+        bundled_dir = get_bundled_decks_dir()
+        if bundled_dir and os.path.exists(bundled_dir):
+            for filename in os.listdir(bundled_dir):
+                if filename.endswith('.json'):
+                    decks[filename] = os.path.join(bundled_dir, filename)
+
+        # Then, add user decks (these override bundled if same name)
+        user_dir = str(USER_DECKS_DIR)
+        if os.path.exists(user_dir):
+            for filename in os.listdir(user_dir):
+                if filename.endswith('.json'):
+                    decks[filename] = os.path.join(user_dir, filename)
+
+        # Also check custom directory if provided
+        if directory and os.path.exists(directory):
+            for filename in os.listdir(directory):
+                if filename.endswith('.json'):
+                    decks[filename] = os.path.join(directory, filename)
+
+        return sorted(decks.values())
 
     @staticmethod
     def get_deck_name_from_file(filepath: str) -> str:

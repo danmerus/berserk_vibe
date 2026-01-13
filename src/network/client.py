@@ -227,7 +227,7 @@ class NetworkClient:
         self._queue_message(msg_request_resync())
 
     # Timeout for command response before auto-resync (seconds)
-    COMMAND_TIMEOUT = 5.0
+    COMMAND_TIMEOUT = 3.0
 
     def poll(self):
         """Process pending messages from network thread.

@@ -44,10 +44,21 @@ BORE_DOWNLOAD_URL = f"https://github.com/{BORE_REPO}/releases/download/v{BORE_VE
 
 
 def get_bore_path() -> Path:
-    """Get path to bore binary in tools directory."""
-    # Store in tools/ directory relative to project root
-    project_root = Path(__file__).parent.parent
-    tools_dir = project_root / "tools"
+    """Get path to bore binary.
+
+    In frozen exe: uses user home directory (~/.berserk_vibe/tools/)
+    In development: uses project tools/ directory
+    """
+    is_frozen = getattr(sys, 'frozen', False)
+
+    if is_frozen:
+        # Frozen exe: use user-writable directory
+        tools_dir = Path.home() / ".berserk_vibe" / "tools"
+    else:
+        # Development: use project tools/ directory
+        project_root = Path(__file__).parent.parent
+        tools_dir = project_root / "tools"
+
     return tools_dir / BORE_BINARY
 
 
