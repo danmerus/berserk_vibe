@@ -433,10 +433,13 @@ class NetworkClient:
         """Main async network loop."""
         try:
             await self._connect()
-            await self._handshake()
 
-            # Start tasks
-            recv_task = asyncio.create_task(self._receive_loop())
+            # Create shared frame_reader to preserve buffered data between handshake and receive loop
+            frame_reader = FrameReader()
+            await self._handshake(frame_reader)
+
+            # Start tasks (pass frame_reader to receive loop)
+            recv_task = asyncio.create_task(self._receive_loop(frame_reader))
             send_task = asyncio.create_task(self._send_loop())
             ping_task = asyncio.create_task(self._ping_loop())
 
@@ -477,14 +480,14 @@ class NetworkClient:
 
         logger.info(f"Connected to {self.host}:{self.port}")
 
-    async def _handshake(self):
+    async def _handshake(self, frame_reader: FrameReader):
         """Perform hello/welcome handshake."""
         content_hash = get_content_hash()
         hello = msg_hello(self.player_name, content_hash)
         await self._send_message(hello)
 
-        # Wait for welcome
-        msg = await self._receive_message()
+        # Wait for welcome (use shared frame_reader to preserve buffered data)
+        msg = await self._receive_message(frame_reader)
         if msg.type == MessageType.WELCOME:
             self.player_id = msg.payload.get('player_id', '')
             self._incoming.put(('connected', None))
@@ -493,10 +496,16 @@ class NetworkClient:
         else:
             raise ConnectionError(f"Unexpected response: {msg.type}")
 
-    async def _receive_loop(self):
+    async def _receive_loop(self, frame_reader: FrameReader):
         """Loop receiving messages from server."""
-        frame_reader = FrameReader()
+        # First process any messages already buffered from handshake
+        while True:
+            msg = frame_reader.get_message()
+            if msg is None:
+                break
+            await self._handle_server_message(msg)
 
+        # Then continue reading new data
         while self._running:
             data = await self._reader.read(4096)
             if not data:
@@ -548,10 +557,14 @@ class NetworkClient:
         self._writer.write(msg.to_bytes())
         await self._writer.drain()
 
-    async def _receive_message(self) -> Message:
-        """Receive single message from server."""
-        frame_reader = FrameReader()
+    async def _receive_message(self, frame_reader: FrameReader) -> Message:
+        """Receive single message from server using shared frame_reader."""
+        # First check if there's already a complete message in the buffer
+        msg = frame_reader.get_message()
+        if msg:
+            return msg
 
+        # Need to read more data
         while True:
             data = await self._reader.read(4096)
             if not data:
