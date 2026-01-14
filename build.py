@@ -22,6 +22,7 @@ def build():
         ("data/die", "data/die"),
         ("data/misc", "data/misc"),
         ("data/decks", "data/decks"),
+        ("data/bg", "data/bg"),
     ]
 
     # Build --add-data arguments
