@@ -219,6 +219,107 @@ def handle_pause_menu_click(
     return None
 
 
+def handle_prep_pause_menu_click(
+    ctx: 'AppContext',
+    mx: int,
+    my: int,
+) -> Optional['AppState']:
+    """Handle click on pause menu buttons during prep states (deck/squad selection, placement).
+
+    Args:
+        ctx: Application context
+        mx: Mouse X in game coordinates
+        my: Mouse Y in game coordinates
+
+    Returns:
+        New AppState if transitioning, None otherwise
+    """
+    from ..constants import AppState
+    from ..settings import set_resolution, get_sound_enabled, set_sound_enabled
+    from ..app_context import create_local_game_state
+    import pygame
+
+    renderer = ctx.renderer
+    btn = renderer.get_clicked_pause_button(mx, my)
+
+    if btn == "resume":
+        ctx.show_pause_menu = False
+    elif btn == "exit":
+        ctx.show_pause_menu = False
+        # Clean up and return to menu
+        if ctx.network_prep_state is not None:
+            if ctx.network_ui:
+                ctx.network_ui.disconnect()
+                ctx.network_ui = None
+            ctx.network_client = None
+            ctx.network_prep_state = None
+        else:
+            ctx.local_game_state = create_local_game_state()
+        return AppState.MENU
+    elif btn == "toggle_sound":
+        set_sound_enabled(not get_sound_enabled())
+    elif btn and btn.startswith("res_"):
+        parts = btn.split("_")
+        if len(parts) == 3:
+            new_w, new_h = int(parts[1]), int(parts[2])
+            ctx.current_resolution = (new_w, new_h)
+            ctx.screen = pygame.display.set_mode(ctx.current_resolution, pygame.RESIZABLE)
+            ctx.renderer.handle_resize(ctx.screen)
+            set_resolution(new_w, new_h)
+
+    return None
+
+
+def render_prep_pause_menu(ctx: 'AppContext') -> bool:
+    """Render pause menu overlay for prep states. Call instead of normal finalize_frame.
+
+    Args:
+        ctx: Application context
+
+    Returns:
+        True if pause menu was rendered (caller should skip normal finalize)
+    """
+    import pygame
+
+    if not ctx.show_pause_menu:
+        return False
+
+    renderer = ctx.renderer
+    renderer.draw_pause_menu(ctx.current_resolution, is_network_game=False)
+    renderer.finalize_frame(skip_flip=True)
+    renderer.draw_pause_menu_native(ctx.current_resolution, is_network_game=False)
+    pygame.display.flip()
+    return True
+
+
+def handle_prep_pause_menu_event(
+    ctx: 'AppContext',
+    event,
+) -> Optional['AppState']:
+    """Handle events when pause menu is open during prep states.
+
+    Args:
+        ctx: Application context
+        event: Pygame event
+
+    Returns:
+        New AppState if transitioning, None if event was handled, False if not in pause menu
+    """
+    import pygame
+
+    if not ctx.show_pause_menu:
+        return False  # Not in pause menu - caller should handle event
+
+    if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+        ctx.show_pause_menu = False
+        return None
+    elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+        mx, my = ctx.renderer.screen_to_game_coords(*event.pos)
+        return handle_prep_pause_menu_click(ctx, mx, my)
+
+    return None  # Block other events while pause menu is open
+
+
 def process_game_events(game: 'Game', renderer: 'Renderer', events: list) -> None:
     """Process game events and update UI.
 

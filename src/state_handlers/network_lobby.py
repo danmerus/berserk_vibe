@@ -190,6 +190,9 @@ class NetworkLobbyHandler(StateHandler):
         from ..constants import AppState
 
         if event.key == pygame.K_ESCAPE:
+            # Properly disconnect before leaving
+            if self.ctx.network_ui:
+                self.ctx.network_ui.process_action('back')
             self.ctx.network_ui = None
             return AppState.MENU
 

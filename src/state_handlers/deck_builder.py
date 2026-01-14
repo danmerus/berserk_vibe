@@ -4,6 +4,7 @@ import pygame
 from typing import Optional, TYPE_CHECKING
 
 from .base import StateHandler
+from .helpers import handle_prep_pause_menu_event, render_prep_pause_menu
 
 if TYPE_CHECKING:
     from ..app_context import AppContext
@@ -38,14 +39,10 @@ class DeckBuilderHandler(StateHandler):
             return None
 
         # Handle pause menu first (only in selection mode)
-        if self.is_selection_mode and self.ctx.show_pause_menu:
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                self.ctx.show_pause_menu = False
-                return None
-            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                mx, my = self.ctx.renderer.screen_to_game_coords(*event.pos)
-                return self._handle_pause_menu_click(mx, my)
-            return None  # Block other events while pause menu is open
+        if self.is_selection_mode:
+            result = handle_prep_pause_menu_event(self.ctx, event)
+            if result is not False:  # False means not in pause menu
+                return result
 
         if event.type == pygame.KEYDOWN:
             return self._handle_keydown(event)
@@ -283,45 +280,9 @@ class DeckBuilderHandler(StateHandler):
             return AppState.SQUAD_SELECT
 
     def _go_back(self) -> 'AppState':
-        """Go back to menu."""
+        """Go back to menu (for non-selection mode only)."""
         from ..constants import AppState
-        from ..app_context import create_local_game_state
-
-        if self.is_selection_mode:
-            if self.ctx.network_prep_state is not None:
-                self.ctx.network_prep_state = None
-            else:
-                self.ctx.local_game_state = create_local_game_state()
-
         return AppState.MENU
-
-    def _handle_pause_menu_click(self, mx: int, my: int) -> Optional['AppState']:
-        """Handle click in pause menu (selection mode only)."""
-        from ..constants import AppState
-        from ..settings import set_resolution, get_sound_enabled, set_sound_enabled
-
-        renderer = self.ctx.renderer
-        btn = renderer.get_clicked_pause_button(mx, my)
-
-        if btn == "resume":
-            self.ctx.show_pause_menu = False
-        elif btn == "exit":
-            self.ctx.show_pause_menu = False
-            return self._go_back()
-        elif btn == "toggle_sound":
-            set_sound_enabled(not get_sound_enabled())
-        elif btn and btn.startswith("res_"):
-            # Resolution change
-            parts = btn.split("_")
-            if len(parts) == 3:
-                new_w, new_h = int(parts[1]), int(parts[2])
-                self.ctx.current_resolution = (new_w, new_h)
-                import pygame
-                self.ctx.screen = pygame.display.set_mode(self.ctx.current_resolution, pygame.RESIZABLE)
-                self.ctx.renderer.handle_resize(self.ctx.screen)
-                set_resolution(new_w, new_h)
-
-        return None
 
     def update(self, dt: float) -> Optional['AppState']:
         """Update deck builder state."""
@@ -339,16 +300,10 @@ class DeckBuilderHandler(StateHandler):
             dbr.draw(db, card_images_full)
 
             # Draw pause menu overlay (selection mode only)
-            if self.is_selection_mode and self.ctx.show_pause_menu:
-                renderer = self.ctx.renderer
-                renderer.draw_pause_menu(self.ctx.current_resolution, is_network_game=False)
-                renderer.finalize_frame(skip_flip=True)
-                renderer.draw_pause_menu_native(self.ctx.current_resolution, is_network_game=False)
-                pygame.display.flip()
-            else:
-                self.ctx.renderer.finalize_frame()
+            if self.is_selection_mode and render_prep_pause_menu(self.ctx):
+                return
+            self.ctx.renderer.finalize_frame()
 
     def on_enter(self) -> None:
         """Called when entering deck builder/selection state."""
-        if self.is_selection_mode:
-            self.ctx.show_pause_menu = False
+        self.ctx.show_pause_menu = False

@@ -38,8 +38,8 @@ class MovementMixin:
         """Get valid attack targets for a card."""
         targets = self.board.get_attack_targets(card, include_allies)
 
-        # If card has prepared flyer attack, add enemy flyers
-        if card.can_attack_flyer and not card.stats.is_flying:
+        # If card has prepared flyer attack, add enemy flyers (only when untapped)
+        if card.can_attack_flyer and not card.stats.is_flying and not card.tapped:
             enemy_player = 2 if card.player == 1 else 1
             for flying_card in self.board.get_flying_cards(enemy_player):
                 if flying_card.is_alive and flying_card.position is not None:

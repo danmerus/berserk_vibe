@@ -184,6 +184,7 @@ class NetworkGameHandler(StateHandler):
         # Game over popup - click to dismiss and return to menu
         if game.phase == GamePhase.GAME_OVER and renderer.game_over_popup:
             renderer.hide_game_over_popup()
+            self._cleanup_network()
             self.ctx.reset_network_game()
             return AppState.MENU
 
@@ -262,16 +263,14 @@ class NetworkGameHandler(StateHandler):
         if btn == "resume":
             self.ctx.show_pause_menu = False
         elif btn == "concede":
-            # For network, just leave the match
-            if self.ctx.network_client:
-                self.ctx.network_client.leave_match()
+            # For network, leave match and disconnect
+            self._cleanup_network()
             self.ctx.show_pause_menu = False
             self.ctx.reset_network_game()
             return AppState.MENU
         elif btn == "exit":
             self.ctx.show_pause_menu = False
-            if self.ctx.network_client:
-                self.ctx.network_client.leave_match()
+            self._cleanup_network()
             self.ctx.reset_network_game()
             return AppState.MENU
         elif btn == "toggle_sound":
@@ -287,6 +286,19 @@ class NetworkGameHandler(StateHandler):
                 set_resolution(new_w, new_h)
 
         return None
+
+    def _cleanup_network(self):
+        """Clean up network connection when leaving game."""
+        # Leave match first (notifies server)
+        if self.ctx.network_client:
+            self.ctx.network_client.leave_match()
+
+        # Disconnect from server entirely
+        if self.ctx.network_ui:
+            self.ctx.network_ui.disconnect()
+            self.ctx.network_ui = None
+
+        self.ctx.network_client = None
 
     def _send_command(self, cmd) -> bool:
         """Send a command to the network client."""

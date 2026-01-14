@@ -4,7 +4,7 @@ import pygame
 from typing import Optional, TYPE_CHECKING
 
 from .base import StateHandler
-from .helpers import get_phase_state
+from .helpers import get_phase_state, handle_prep_pause_menu_event, render_prep_pause_menu
 
 if TYPE_CHECKING:
     from ..app_context import AppContext
@@ -46,6 +46,11 @@ class SquadSelectHandler(StateHandler):
         if not sb or not sr:
             return None
 
+        # Handle pause menu first
+        result = handle_prep_pause_menu_event(self.ctx, event)
+        if result is not False:  # False means not in pause menu
+            return result
+
         if event.type == pygame.KEYDOWN:
             return self._handle_keydown(event, sr)
 
@@ -72,6 +77,8 @@ class SquadSelectHandler(StateHandler):
         if event.key == pygame.K_ESCAPE:
             if sr.popup_card_name:
                 sr.hide_card_popup()
+            else:
+                self.ctx.show_pause_menu = True
         return None
 
     def _handle_click(self, mx: int, my: int, sb, sr) -> Optional['AppState']:
@@ -178,4 +185,11 @@ class SquadSelectHandler(StateHandler):
         if sb and sr:
             _, _, card_images_full, _ = self.ctx.renderer.get_deck_builder_resources()
             sr.draw(sb, card_images_full)
+
+            if render_prep_pause_menu(self.ctx):
+                return
             self.ctx.renderer.finalize_frame()
+
+    def on_enter(self) -> None:
+        """Called when entering squad selection state."""
+        self.ctx.show_pause_menu = False
