@@ -177,6 +177,12 @@ class NetworkLobbyHandler(StateHandler):
             self.ctx.network_ui.handle_mouse_event(mouse_event)
             return None
 
+        elif event.type == pygame.MOUSEWHEEL:
+            # Pass scroll events to chat
+            if self.ctx.network_ui and self.ctx.network_ui.chat:
+                self.ctx.network_ui.chat.handle_event(event)
+            return None
+
         return None
 
     def _handle_keydown(self, event: pygame.event.Event) -> Optional['AppState']:

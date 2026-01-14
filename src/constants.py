@@ -213,8 +213,17 @@ class UILayout:
     CHAT_WIDTH = 250
     CHAT_HEIGHT = 500
     CHAT_INPUT_HEIGHT = 32
-    CHAT_TITLE_HEIGHT = 24
+    CHAT_TITLE_HEIGHT = 28
+    CHAT_TITLE_FONT_SIZE = 16
     CHAT_MESSAGE_PADDING = 4
+
+    # -------------------------------------------------------------------------
+    # LOBBY CHAT (network lobby screen)
+    # -------------------------------------------------------------------------
+    LOBBY_CHAT_X = 50
+    LOBBY_CHAT_Y = 100
+    LOBBY_CHAT_WIDTH = 280
+    LOBBY_CHAT_HEIGHT = 450
 
     # -------------------------------------------------------------------------
     # DRAW BUTTON (network games only, below chat)
@@ -315,6 +324,11 @@ class UILayout:
     POPUP_DICE_Y = 100
     POPUP_DICE_BG = (40, 40, 50)
     POPUP_DICE_BORDER = (100, 100, 120)
+    # Row layout (relative to popup_x)
+    POPUP_DICE_NAME_X = 15           # Card name position
+    POPUP_DICE_VALUE_X = 200         # Dice value position
+    POPUP_DICE_BUTTONS_X = 270       # +1/-1/Re buttons position
+    POPUP_DICE_BUTTONS_Y_OFFSET = 5  # Vertical offset for buttons (positive = lower)
 
     # -------------------------------------------------------------------------
     # PAUSE MENU

@@ -110,6 +110,10 @@ class NetworkClient:
     on_player_left: Optional[Callable[[int, str, str], None]] = None  # player_number, player_name, reason
     on_resync: Optional[Callable[[dict], None]] = None  # Called when server sends full resync
     on_resync_requested: Optional[Callable[[], None]] = None  # Called when client requests resync (timeout)
+    on_lobby_status: Optional[Callable[[int], None]] = None  # user_count
+
+    # Lobby state
+    lobby_user_count: int = 0
 
     def __post_init__(self):
         self._outgoing = Queue()
@@ -200,8 +204,8 @@ class NetworkClient:
         self._queue_message(msg_command(cmd, self._command_seq))
 
     def send_chat(self, text: str):
-        """Send a chat message."""
-        if self.state != ClientState.IN_MATCH:
+        """Send a chat message (works in lobby or match)."""
+        if self.state not in (ClientState.IN_LOBBY, ClientState.IN_MATCH, ClientState.CONNECTED):
             return
         self._queue_message(msg_chat(text, self.player_name))
 
@@ -401,6 +405,11 @@ class NetworkClient:
         elif msg_type == 'draw_offered':
             if self.on_draw_offered:
                 self.on_draw_offered(data.get('player_number', 0))
+
+        elif msg_type == 'lobby_status':
+            self.lobby_user_count = data.get('user_count', 0)
+            if self.on_lobby_status:
+                self.on_lobby_status(self.lobby_user_count)
 
     # =========================================================================
     # NETWORK THREAD
@@ -626,6 +635,11 @@ class NetworkClient:
         elif msg.type == MessageType.DRAW_OFFERED:
             self._incoming.put(('draw_offered', {
                 'player_number': msg.payload.get('player_number', 0),
+            }))
+
+        elif msg.type == MessageType.LOBBY_STATUS:
+            self._incoming.put(('lobby_status', {
+                'user_count': msg.payload.get('user_count', 0),
             }))
 
         else:

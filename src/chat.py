@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Callable
 
 from .text_input import TextInput, draw_text_input_field
-from .constants import COLOR_TEXT, COLOR_BG, COLOR_SELF, COLOR_OPPONENT
+from .constants import COLOR_TEXT, COLOR_BG, COLOR_SELF, COLOR_OPPONENT, UILayout
 
 
 @dataclass
@@ -41,11 +41,13 @@ class ChatUI:
     bg_color: tuple = (30, 30, 35)
     border_color: tuple = (60, 60, 70)
     input_height: int = 32
+    title_height: int = 28
     message_padding: int = 4
 
     # Fonts (set externally)
     font: Optional[pygame.font.Font] = None
     font_small: Optional[pygame.font.Font] = None
+    font_title: Optional[pygame.font.Font] = None
 
     # Callbacks
     on_send: Optional[Callable[[str], None]] = None
@@ -61,10 +63,11 @@ class ChatUI:
         self.messages = []
         self.text_input = TextInput(max_length=200)
 
-    def set_fonts(self, font: pygame.font.Font, font_small: pygame.font.Font):
+    def set_fonts(self, font: pygame.font.Font, font_small: pygame.font.Font, font_title: Optional[pygame.font.Font] = None):
         """Set fonts for rendering."""
         self.font = font
         self.font_small = font_small
+        self.font_title = font_title if font_title else font
 
     def add_message(self, player_name: str, text: str, player_number: int = 0, is_system: bool = False):
         """Add a new chat message."""
@@ -156,19 +159,21 @@ class ChatUI:
         pygame.draw.rect(screen, self.border_color, bg_rect, 1)
 
         # Title bar
-        title_height = 24
-        title_rect = pygame.Rect(self.x, self.y, self.width, title_height)
+        title_rect = pygame.Rect(self.x, self.y, self.width, self.title_height)
         pygame.draw.rect(screen, (40, 40, 50), title_rect)
         pygame.draw.line(screen, self.border_color,
-                        (self.x, self.y + title_height),
-                        (self.x + self.width, self.y + title_height))
+                        (self.x, self.y + self.title_height),
+                        (self.x + self.width, self.y + self.title_height))
 
-        title_text = self.font_small.render("Чат", True, COLOR_TEXT)
-        screen.blit(title_text, (self.x + 8, self.y + 4))
+        title_font = self.font_title if self.font_title else self.font_small
+        title_text = title_font.render("Чат", True, COLOR_TEXT)
+        title_x = self.x + (self.width - title_text.get_width()) // 2
+        title_y = self.y + (self.title_height - title_text.get_height()) // 2
+        screen.blit(title_text, (title_x, title_y))
 
         # Messages area
-        messages_y = self.y + title_height + 2
-        messages_height = self.height - title_height - self.input_height - 8
+        messages_y = self.y + self.title_height + 2
+        messages_height = self.height - self.title_height - self.input_height - 8
         self._messages_rect = pygame.Rect(self.x + 2, messages_y, self.width - 4, messages_height)
 
         # Create clip rect for messages
@@ -235,10 +240,12 @@ class ChatUI:
             border_active_color=(100, 80, 120),
         )
 
-        # Hint text if input is empty and not active
+        # Hint text if input is empty and not active (centered)
         if not self.text_input.active and not self.text_input.value:
             hint = self.font_small.render("Нажмите чтобы написать...", True, (100, 100, 110))
-            screen.blit(hint, (self._input_rect.x + 10, input_y + 8))
+            hint_x = self._input_rect.x + (self._input_rect.width - hint.get_width()) // 2
+            hint_y = input_y + (self.input_height - hint.get_height()) // 2
+            screen.blit(hint, (hint_x, hint_y))
 
     def is_input_focused(self) -> bool:
         """Check if the text input is currently focused."""

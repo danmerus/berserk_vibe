@@ -19,8 +19,11 @@ class MenusMixin:
         """Draw the main menu screen with native resolution text for crisp rendering."""
         self.menu_buttons = []
 
-        # Clear screen with background (base resolution)
-        self.screen.fill(COLOR_BG)
+        # Clear screen with background image or fallback to solid color
+        if hasattr(self, 'menu_background') and self.menu_background is not None:
+            self.screen.blit(self.menu_background, (0, 0))
+        else:
+            self.screen.fill(COLOR_BG)
 
         # Scale and blit background to window first
         self.window.fill((0, 0, 0))
@@ -34,18 +37,11 @@ class MenusMixin:
 
         # Now draw text and buttons directly to window at native resolution
         title_font = self.get_native_font('title')
-        title = title_font.render("БЕРСЕРК", True, (200, 180, 100))
+        title = title_font.render("БЕРСЕРК-vibe", True, (247, 211, 82))
         game_area_width = int(self.BASE_WIDTH * self.scale) if self.scale > 0 else self.BASE_WIDTH
         title_win_x = self.offset_x + game_area_width // 2 - title.get_width() // 2
         _, title_win_y = self.game_to_window_coords(0, int(80 * UI_SCALE))
         self.window.blit(title, (title_win_x, title_win_y))
-
-        # Subtitle
-        subtitle_font = self.get_native_font('medium')
-        subtitle = subtitle_font.render("Цифровая карточная игра", True, (150, 150, 160))
-        subtitle_win_x = self.offset_x + int(self.BASE_WIDTH * self.scale) // 2 - subtitle.get_width() // 2
-        _, subtitle_win_y = self.game_to_window_coords(0, int(140 * UI_SCALE))
-        self.window.blit(subtitle, (subtitle_win_x, subtitle_win_y))
 
         # Menu buttons
         buttons = [
@@ -128,7 +124,7 @@ class MenusMixin:
 
         # Title
         title_font = self.get_native_font('title_medium')
-        title = title_font.render("НАСТРОЙКИ", True, (200, 180, 100))
+        title = title_font.render("НАСТРОЙКИ", True, (247, 211, 82))
         title_win_x = self.offset_x + game_area_width // 2 - title.get_width() // 2
         _, title_win_y = self.game_to_window_coords(0, scaled(60))
         self.window.blit(title, (title_win_x, title_win_y))

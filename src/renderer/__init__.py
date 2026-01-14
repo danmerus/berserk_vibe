@@ -257,6 +257,41 @@ class Renderer(
                     print(f"Error loading cardback.jpg: {e}")
                 break
 
+        # Load menu background image
+        self.menu_background: Optional[pygame.Surface] = None
+        bg_paths = [
+            os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'bg'),
+            os.path.join(os.path.dirname(__file__), '..', 'data', 'bg'),
+            'data/bg',
+        ]
+        if hasattr(sys, '_MEIPASS'):
+            bg_paths.insert(0, os.path.join(sys._MEIPASS, 'data', 'bg'))
+
+        for path in bg_paths:
+            bg_path = os.path.join(path, 'bg.jpg')
+            if os.path.exists(bg_path):
+                try:
+                    img = pygame.image.load(bg_path)
+                    img = pygame.transform.rotate(img, 90)
+                    # Scale to base resolution, maintaining aspect ratio
+                    img_w, img_h = img.get_size()
+                    scale_x = WINDOW_WIDTH / img_w
+                    scale_y = WINDOW_HEIGHT / img_h
+                    # Cover: max() fills screen, may crop edges (no black bars)
+                    bg_scale = max(scale_x, scale_y)
+                    new_w = int(img_w * bg_scale)
+                    new_h = int(img_h * bg_scale)
+                    scaled_img = pygame.transform.smoothscale(img, (new_w, new_h))
+                    # Crop to base resolution (center)
+                    crop_x = (new_w - WINDOW_WIDTH) // 2
+                    crop_y = (new_h - WINDOW_HEIGHT) // 2
+                    self.menu_background = scaled_img.subsurface(
+                        (crop_x, crop_y, WINDOW_WIDTH, WINDOW_HEIGHT)
+                    ).copy()
+                except Exception as e:
+                    print(f"Error loading bg.jpg: {e}")
+                break
+
         # Load dice images
         self.dice_images: Dict[int, pygame.Surface] = {}
         dice_paths = [

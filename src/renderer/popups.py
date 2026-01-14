@@ -312,12 +312,12 @@ class PopupsMixin:
         color = self.get_player_color(card.player)  # Blue for you, red for opponent
         total = roll + modifier + bonus
 
-        # Draw card name
+        # Draw card name (position from UILayout.POPUP_DICE_NAME_X)
         name_surface = self.font_medium.render(f"{card.name}:", True, color)
-        self.screen.blit(name_surface, (popup_x + 15, y_offset))
+        self.screen.blit(name_surface, (popup_x + scaled(UILayout.POPUP_DICE_NAME_X), y_offset))
 
-        # Draw dice value
-        dice_x = popup_x + 210
+        # Draw dice value (position from UILayout.POPUP_DICE_VALUE_X)
+        dice_x = popup_x + scaled(UILayout.POPUP_DICE_VALUE_X)
         bonus_str = f"+{bonus}" if bonus > 0 else ""
 
         if modifier != 0:
@@ -342,12 +342,13 @@ class PopupsMixin:
             dice_surface = self.font_medium.render(dice_text, True, COLOR_TEXT)
             self.screen.blit(dice_surface, (dice_x, y_offset))
 
-        # Draw modification buttons
-        btn_x = popup_x + 290
+        # Draw modification buttons (position from UILayout.POPUP_DICE_BUTTONS_X/Y_OFFSET)
+        btn_x = popup_x + scaled(UILayout.POPUP_DICE_BUTTONS_X)
+        btn_y = y_offset - 3 + scaled(UILayout.POPUP_DICE_BUTTONS_Y_OFFSET)
         for suffix, label, color in [('_plus1', '+1', (80, 140, 80)),
                                      ('_minus1', '-1', (140, 80, 80)),
-                                     ('_reroll', 'Re', (80, 80, 140))]:
-            btn_rect = pygame.Rect(btn_x, y_offset - 3, 48, 26)
+                                     ('_reroll', 'reroll', (80, 80, 140))]:
+            btn_rect = pygame.Rect(btn_x, btn_y, 48, 26)
             pygame.draw.rect(self.screen, color, btn_rect)
             pygame.draw.rect(self.screen, COLOR_TEXT, btn_rect, 1)
             btn_text = self.font_small.render(label, True, COLOR_TEXT)

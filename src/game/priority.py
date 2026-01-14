@@ -73,7 +73,6 @@ class PriorityMixin:
             for card in self.board.get_all_cards():
                 if card.has_ability("luck"):
                     found_any = True
-                    self.log(f"  [DEBUG: {card.name} tapped={card.tapped} alive={card.is_alive} webbed={card.webbed}]")
                     break
             if found_any:
                 self._get_instant_cards(1, debug=True)

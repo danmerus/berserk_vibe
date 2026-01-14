@@ -254,11 +254,12 @@ class Board:
         targets = []
         enemy_player = 2 if card.player == 1 else 1
 
-        # Check if enemy has any card with flyer_taunt
+        # Check if enemy has any card with flyer_taunt (not hidden)
         flyer_taunt_targets = []
         for pos, target_card in enumerate(self.cells):
             if target_card and target_card.is_alive and target_card.player == enemy_player:
-                if target_card.has_ability("flyer_taunt"):
+                # flyer_taunt doesn't work while hidden (face_down)
+                if target_card.has_ability("flyer_taunt") and not target_card.face_down:
                     flyer_taunt_targets.append(pos)
 
         # If enemy has flyer_taunt, can ONLY attack those creatures

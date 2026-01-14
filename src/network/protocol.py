@@ -69,6 +69,9 @@ class MessageType(Enum):
     # Errors
     ERROR = auto()          # Server → Client: error message
 
+    # Lobby status
+    LOBBY_STATUS = auto()   # Server → Client: lobby info (user count, etc)
+
 
 @dataclass
 class Message:
@@ -393,4 +396,12 @@ def msg_draw_offered(player_number: int) -> Message:
     return Message(
         type=MessageType.DRAW_OFFERED,
         payload={'player_number': player_number}
+    )
+
+
+def msg_lobby_status(user_count: int) -> Message:
+    """Send lobby status update (user count, etc)."""
+    return Message(
+        type=MessageType.LOBBY_STATUS,
+        payload={'user_count': user_count}
     )

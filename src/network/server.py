@@ -21,6 +21,7 @@ from .protocol import (
     msg_welcome, msg_error, msg_pong, msg_match_created, msg_match_joined,
     msg_player_joined, msg_player_left, msg_game_start, msg_update, msg_resync,
     msg_game_over, msg_match_list, msg_player_ready_status, msg_chat, msg_draw_offered,
+    msg_lobby_status,
 )
 from .session import PlayerSession, MatchSession, SessionState
 from ..match import MatchServer, get_content_hash
@@ -188,6 +189,9 @@ class GameServer:
 
         await session.close()
 
+        # Broadcast updated user count to all remaining users
+        await self._broadcast_lobby_status()
+
     # =========================================================================
     # MESSAGE ROUTING
     # =========================================================================
@@ -256,6 +260,9 @@ class GameServer:
 
         await self._send(session, msg_welcome(session.player_id))
         logger.info(f"Player authenticated: {player_name} ({session.player_id})")
+
+        # Broadcast updated user count to all
+        await self._broadcast_lobby_status()
 
     async def _handle_ping(self, session: PlayerSession, msg: Message):
         """Handle ping - respond with pong."""
@@ -550,24 +557,25 @@ class GameServer:
         await self._send(session, msg_resync(snapshot, seq))
 
     async def _handle_chat(self, session: PlayerSession, msg: Message):
-        """Handle chat message - broadcast to all players in match."""
-        if session.state != SessionState.IN_MATCH:
-            return
-
-        match = self.matches.get(session.match_id)
-        if not match:
-            return
-
+        """Handle chat message - broadcast to match or lobby."""
         text = msg.payload.get('text', '')
         if not text:
             return
 
-        # Use the session's player_name and player_number for security (not what client sent)
-        chat_msg = msg_chat(text, session.player_name, session.player_number)
+        if session.state == SessionState.IN_MATCH:
+            # In-match chat - broadcast to match players only
+            match = self.matches.get(session.match_id)
+            if not match:
+                return
 
-        # Broadcast to all players in the match (including sender)
-        await self._broadcast_match(match, chat_msg)
-        logger.debug(f"Chat [{match.match_id}] {session.player_name}: {text}")
+            # Use the session's player_name and player_number for security
+            chat_msg = msg_chat(text, session.player_name, session.player_number)
+            await self._broadcast_match(match, chat_msg)
+            logger.debug(f"Chat [{match.match_id}] {session.player_name}: {text}")
+        else:
+            # Lobby chat - broadcast to all connected users
+            await self._broadcast_lobby_chat(session, text)
+            logger.debug(f"Lobby chat {session.player_name}: {text}")
 
     async def _handle_draw_offer(self, session: PlayerSession, msg: Message):
         """Handle draw offer - notify opponent."""
@@ -622,6 +630,25 @@ class GameServer:
             session = match.get_session(player_num)
             if session and session.state == SessionState.IN_MATCH:
                 await self._send(session, msg)
+
+    async def _broadcast_lobby_status(self):
+        """Broadcast lobby status (user count) to all connected users."""
+        user_count = len(self.sessions)
+        status_msg = msg_lobby_status(user_count)
+        for session in list(self.sessions.values()):
+            try:
+                await self._send(session, status_msg)
+            except Exception:
+                pass  # Session might be disconnecting
+
+    async def _broadcast_lobby_chat(self, sender: PlayerSession, text: str):
+        """Broadcast chat message to all users in lobby (not in match)."""
+        chat_msg = msg_chat(text, sender.player_name, 0)  # player_number=0 for lobby
+        for session in list(self.sessions.values()):
+            try:
+                await self._send(session, chat_msg)
+            except Exception:
+                pass
 
     # =========================================================================
     # BACKGROUND TASKS

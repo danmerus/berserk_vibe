@@ -159,11 +159,12 @@ def _is_port_available(port: int) -> bool:
 
 from .constants import (
     WINDOW_WIDTH, WINDOW_HEIGHT, scaled,
-    COLOR_BG, COLOR_TEXT,
+    COLOR_BG, COLOR_TEXT, UILayout,
 )
 from .network.client import NetworkClient, ClientState
 from .text_input import TextInput, draw_text_input_field
 from .tunnel import BoreTunnel, ensure_bore_installed, is_bore_installed
+from .chat import ChatUI
 
 
 class LobbyState(Enum):
@@ -233,6 +234,10 @@ class NetworkUI:
     tunnel_url: str = ""
     tunnel_status: str = ""  # Status message during tunnel setup
 
+    # Chat UI
+    chat: Optional[ChatUI] = None
+    lobby_user_count: int = 0
+
     def __post_init__(self):
         self.buttons = []
         # Initialize text inputs - load saved nickname
@@ -243,6 +248,19 @@ class NetworkUI:
             'name': TextInput(value=saved_nickname, max_length=20),
             'code': TextInput(value="", max_length=6, uppercase=True, allowed_chars="ABCDEF0123456789"),
         }
+        # Initialize chat UI on left side (using constants)
+        self.chat = ChatUI(
+            x=scaled(UILayout.LOBBY_CHAT_X),
+            y=scaled(UILayout.LOBBY_CHAT_Y),
+            width=scaled(UILayout.LOBBY_CHAT_WIDTH),
+            height=scaled(UILayout.LOBBY_CHAT_HEIGHT),
+            title_height=scaled(UILayout.CHAT_TITLE_HEIGHT),
+            input_height=scaled(UILayout.CHAT_INPUT_HEIGHT),
+        )
+        # Create title font (slightly bigger)
+        font_title = pygame.font.SysFont('arial', scaled(UILayout.CHAT_TITLE_FONT_SIZE))
+        self.chat.set_fonts(self.font_small, self.font_small, font_title)
+        self.chat.on_send = self._on_chat_send
         self._setup_client()
 
     # Property accessors for input values
@@ -270,6 +288,8 @@ class NetworkUI:
         self.client.on_ready_status = self._on_ready_status
         self.client.on_game_start = self._on_game_start
         self.client.on_match_list = self._on_match_list
+        self.client.on_chat = self._on_chat_received
+        self.client.on_lobby_status = self._on_lobby_status
 
     def _on_connected(self):
         """Called when connected to server."""
@@ -344,6 +364,20 @@ class NetworkUI:
         else:
             self.status_message = f"Найдено игр: {len(matches)}"
 
+    def _on_chat_received(self, player_name: str, text: str, player_number: int):
+        """Called when a chat message is received."""
+        if self.chat:
+            self.chat.add_message(player_name, text, player_number)
+
+    def _on_lobby_status(self, user_count: int):
+        """Called when lobby status is updated."""
+        self.lobby_user_count = user_count
+
+    def _on_chat_send(self, text: str):
+        """Called when user sends a chat message."""
+        if self.client:
+            self.client.send_chat(text)
+
     def update(self):
         """Poll for network updates. Call every frame."""
         if self.client:
@@ -406,10 +440,15 @@ class NetworkUI:
         if field and field in self.inputs:
             self.inputs[field].activate(self.inputs[field].value)
 
-    def handle_text_input(self, event: pygame.event.Event):
-        """Handle text input events using TextInput class."""
+    def handle_text_input(self, event: pygame.event.Event) -> bool:
+        """Handle text input events using TextInput class. Returns True if consumed."""
+        # First, let chat handle the event if it's active
+        if self.chat and self.state not in (LobbyState.CONNECT, LobbyState.CONNECTING):
+            if self.chat.handle_event(event):
+                return True
+
         if not self.active_input or self.active_input not in self.inputs:
-            return
+            return False
 
         text_input = self.inputs[self.active_input]
         result = text_input.handle_event(event)
@@ -419,6 +458,11 @@ class NetworkUI:
                 self.connect()
             elif self.state == LobbyState.JOINING:
                 self.join_match()
+            return True
+        elif result is not None:
+            return True
+
+        return False
 
     def handle_click(self, mx: int, my: int) -> Optional[str]:
         """Handle mouse click. Returns action if button clicked."""
@@ -428,7 +472,12 @@ class NetworkUI:
         return None
 
     def handle_mouse_event(self, event: pygame.event.Event):
-        """Handle mouse events for text input selection."""
+        """Handle mouse events for text input selection and chat."""
+        # Let chat handle mouse events first
+        if self.chat and self.state not in (LobbyState.CONNECT, LobbyState.CONNECTING):
+            if self.chat.handle_event(event):
+                return
+
         if not self.active_input or self.active_input not in self.inputs:
             return
 
@@ -451,6 +500,15 @@ class NetworkUI:
         title = self.font_large.render("Игра по сети", True, COLOR_TEXT)
         title_x = (WINDOW_WIDTH - title.get_width()) // 2
         self.screen.blit(title, (title_x, scaled(50)))
+
+        # Draw user count when connected (top left)
+        if self.state not in (LobbyState.CONNECT, LobbyState.CONNECTING):
+            user_text = self.font_large.render(f"Онлайн: {self.lobby_user_count}", True, (100, 200, 100))
+            self.screen.blit(user_text, (scaled(50), scaled(20)))
+
+        # Draw chat on left side when connected
+        if self.state not in (LobbyState.CONNECT, LobbyState.CONNECTING) and self.chat:
+            self.chat.draw(self.screen)
 
         # Draw based on state
         if self.state == LobbyState.CONNECT:
