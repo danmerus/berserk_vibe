@@ -240,6 +240,11 @@ class CombatMixin:
         attacker = self.get_card_by_id(self.interaction.actor_id)
         if not attacker:
             return False
+
+        # Reveal face-down defender when they intercept
+        if defender.face_down:
+            self.reveal_card(defender)
+
         self.log(f"{defender.name} перехватывает атаку!")
 
         # Redirect arrow to defender
