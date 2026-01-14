@@ -37,6 +37,16 @@ class DeckBuilderHandler(StateHandler):
         if not dbr:
             return None
 
+        # Handle pause menu first (only in selection mode)
+        if self.is_selection_mode and self.ctx.show_pause_menu:
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                self.ctx.show_pause_menu = False
+                return None
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                mx, my = self.ctx.renderer.screen_to_game_coords(*event.pos)
+                return self._handle_pause_menu_click(mx, my)
+            return None  # Block other events while pause menu is open
+
         if event.type == pygame.KEYDOWN:
             return self._handle_keydown(event)
 
@@ -107,6 +117,9 @@ class DeckBuilderHandler(StateHandler):
                 dbr.hide_load_popup()
             elif dbr.show_confirm_popup:
                 dbr.hide_confirmation()
+            elif self.is_selection_mode:
+                # Show pause menu in selection mode
+                self.ctx.show_pause_menu = True
             else:
                 return self._go_back()
 
@@ -282,6 +295,34 @@ class DeckBuilderHandler(StateHandler):
 
         return AppState.MENU
 
+    def _handle_pause_menu_click(self, mx: int, my: int) -> Optional['AppState']:
+        """Handle click in pause menu (selection mode only)."""
+        from ..constants import AppState
+        from ..settings import set_resolution, get_sound_enabled, set_sound_enabled
+
+        renderer = self.ctx.renderer
+        btn = renderer.get_clicked_pause_button(mx, my)
+
+        if btn == "resume":
+            self.ctx.show_pause_menu = False
+        elif btn == "exit":
+            self.ctx.show_pause_menu = False
+            return self._go_back()
+        elif btn == "toggle_sound":
+            set_sound_enabled(not get_sound_enabled())
+        elif btn and btn.startswith("res_"):
+            # Resolution change
+            parts = btn.split("_")
+            if len(parts) == 3:
+                new_w, new_h = int(parts[1]), int(parts[2])
+                self.ctx.current_resolution = (new_w, new_h)
+                import pygame
+                self.ctx.screen = pygame.display.set_mode(self.ctx.current_resolution, pygame.RESIZABLE)
+                self.ctx.renderer.handle_resize(self.ctx.screen)
+                set_resolution(new_w, new_h)
+
+        return None
+
     def update(self, dt: float) -> Optional['AppState']:
         """Update deck builder state."""
         dbr = self.ctx.deck_builder_renderer
@@ -296,4 +337,18 @@ class DeckBuilderHandler(StateHandler):
         if dbr and db:
             _, _, card_images_full, _ = self.ctx.renderer.get_deck_builder_resources()
             dbr.draw(db, card_images_full)
-            self.ctx.renderer.finalize_frame()
+
+            # Draw pause menu overlay (selection mode only)
+            if self.is_selection_mode and self.ctx.show_pause_menu:
+                renderer = self.ctx.renderer
+                renderer.draw_pause_menu(self.ctx.current_resolution, is_network_game=False)
+                renderer.finalize_frame(skip_flip=True)
+                renderer.draw_pause_menu_native(self.ctx.current_resolution, is_network_game=False)
+                pygame.display.flip()
+            else:
+                self.ctx.renderer.finalize_frame()
+
+    def on_enter(self) -> None:
+        """Called when entering deck builder/selection state."""
+        if self.is_selection_mode:
+            self.ctx.show_pause_menu = False

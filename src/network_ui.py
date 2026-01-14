@@ -296,6 +296,9 @@ class NetworkUI:
         self.state = LobbyState.LOBBY
         self.status_message = "Connected!"
         self.error_message = ""
+        # Set player name on chat for color matching
+        if self.chat:
+            self.chat.my_player_name = self.player_name
         # Call external callback
         if self.on_connected:
             self.on_connected()

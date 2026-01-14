@@ -52,8 +52,9 @@ class ChatUI:
     # Callbacks
     on_send: Optional[Callable[[str], None]] = None
 
-    # Our player number (to highlight our messages)
+    # Our player number/name (to highlight our messages)
     my_player_number: int = 0  # 1 or 2
+    my_player_name: str = ""   # For lobby chat where player_number is 0
 
     # Stored rects for click detection
     _input_rect: Optional[pygame.Rect] = None
@@ -193,11 +194,14 @@ class ChatUI:
                     screen.blit(text_surface, (text_x, y))
             else:
                 # Regular message
-                # Name color based on player number (blue for you, red for opponent)
-                if msg.player_number == self.my_player_number:
-                    name_color = COLOR_SELF
-                else:
-                    name_color = COLOR_OPPONENT
+                # Name color based on player number or name (blue for you, red for others)
+                is_my_message = False
+                if msg.player_number != 0 and msg.player_number == self.my_player_number:
+                    is_my_message = True
+                elif msg.player_number == 0 and msg.player_name == self.my_player_name:
+                    # Lobby chat - compare names instead
+                    is_my_message = True
+                name_color = COLOR_SELF if is_my_message else COLOR_OPPONENT
 
                 # Render name and text
                 name_surface = self.font_small.render(f"{msg.player_name}: ", True, name_color)

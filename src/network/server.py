@@ -54,6 +54,10 @@ class GameServer:
         self.sessions: Dict[str, PlayerSession] = {}  # player_id -> session
         self.matches: Dict[str, MatchSession] = {}    # match_id -> match
 
+        # Lobby chat history (last N messages)
+        self.lobby_chat_history: list = []
+        self.lobby_chat_max_history = 50
+
         # Server state
         self._server: Optional[asyncio.Server] = None
         self._running = False
@@ -261,7 +265,14 @@ class GameServer:
         await self._send(session, msg_welcome(session.player_id))
         logger.info(f"Player authenticated: {player_name} ({session.player_id})")
 
-        # Broadcast updated user count to all
+        # Send lobby status directly to new user first
+        await self._send(session, msg_lobby_status(len(self.sessions)))
+
+        # Send chat history to new user
+        for chat_msg in self.lobby_chat_history:
+            await self._send(session, chat_msg)
+
+        # Broadcast updated user count to all (including new user again, but that's fine)
         await self._broadcast_lobby_status()
 
     async def _handle_ping(self, session: PlayerSession, msg: Message):
@@ -393,7 +404,7 @@ class GameServer:
         """Handle request for list of open matches."""
         open_matches = [
             m.to_dict() for m in self.matches.values()
-            if not m.is_full and not m.is_started
+            if not m.is_full and not m.is_started and m.host_session is not None
         ]
         await self._send(session, msg_match_list(open_matches))
 
@@ -644,6 +655,13 @@ class GameServer:
     async def _broadcast_lobby_chat(self, sender: PlayerSession, text: str):
         """Broadcast chat message to all users in lobby (not in match)."""
         chat_msg = msg_chat(text, sender.player_name, 0)  # player_number=0 for lobby
+
+        # Store in chat history
+        self.lobby_chat_history.append(chat_msg)
+        # Trim history if too long
+        while len(self.lobby_chat_history) > self.lobby_chat_max_history:
+            self.lobby_chat_history.pop(0)
+
         for session in list(self.sessions.values()):
             try:
                 await self._send(session, chat_msg)
