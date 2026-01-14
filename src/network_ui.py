@@ -239,7 +239,7 @@ class NetworkUI:
         from .settings import get_nickname
         saved_nickname = get_nickname() or "Player"
         self.inputs = {
-            'server': TextInput(value="", max_length=50),
+            'server': TextInput(value="13.48.80.75:7777", max_length=50),
             'name': TextInput(value=saved_nickname, max_length=20),
             'code': TextInput(value="", max_length=6, uppercase=True, allowed_chars="ABCDEF0123456789"),
         }
