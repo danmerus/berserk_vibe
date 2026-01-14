@@ -336,6 +336,14 @@ class PanelsMixin:
             if card_y + card_size > content_y and card_y < content_y + panel_height:
                 self.draw_card_thumbnail(card, card_x, card_y, card_size, game, is_graveyard)
 
+                # Draw valhalla glow for flying cards that received buff
+                if is_flyers and card.position is not None:
+                    valhalla_intensity = self.get_valhalla_glow_intensity(card.position)
+                    if valhalla_intensity > 0:
+                        glow_color = (255, int(200 * valhalla_intensity), int(100 * valhalla_intensity))
+                        glow_rect = pygame.Rect(card_x - 2, card_y - 2, card_size + 4, card_size + 4)
+                        pygame.draw.rect(self.screen, glow_color, glow_rect, 4)
+
                 # Draw selection border for selected flying card (gold)
                 # Compare by ID since network games create new Card objects on sync
                 if is_flyers and game and self._ui.selected_card and self._ui.selected_card.id == card.id:
