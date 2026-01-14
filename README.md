@@ -9,7 +9,7 @@
 - Можно создать сервер и отправить ссылку bore.pub:XXXX другу, лагает чуть больше.
 
 ### Чтобы самому забилдить игру: 
- - нужен pip
+ - нужен python 3.10+
  - `pip install pygame>=2.5.0 pyinstaller`
  - `python build.py`
 
