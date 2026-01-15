@@ -281,6 +281,33 @@ def _select_with_primary_element(builder: SquadBuilder,
     return selected
 
 
+def _has_formation_ability(card: Card) -> bool:
+    """Check if card has a formation ability."""
+    from ..abilities import get_ability
+    for aid in card.stats.ability_ids:
+        ability = get_ability(aid)
+        if ability and ability.is_formation:
+            return True
+    return False
+
+
+def _get_adjacent_positions(pos: int) -> List[int]:
+    """Get orthogonally adjacent positions on the main board."""
+    if pos >= 30:  # Flying zone
+        return []
+    row, col = pos // 5, pos % 5
+    adjacent = []
+    if row > 0:
+        adjacent.append(pos - 5)  # Up
+    if row < 5:
+        adjacent.append(pos + 5)  # Down
+    if col > 0:
+        adjacent.append(pos - 1)  # Left
+    if col < 4:
+        adjacent.append(pos + 1)  # Right
+    return [p for p in adjacent if 0 <= p < 30]
+
+
 def place_cards_heuristic(cards: List[Card], player: int) -> Dict[int, Card]:
     """Place cards using heuristics.
 
@@ -288,6 +315,7 @@ def place_cards_heuristic(cards: List[Card], player: int) -> Dict[int, Card]:
     - High HP cards in front row (tanks)
     - Ranged/support cards in back row
     - Flying cards in flying zones
+    - Formation cards placed adjacent to each other
 
     Args:
         cards: List of Card objects to place
@@ -301,6 +329,10 @@ def place_cards_heuristic(cards: List[Card], player: int) -> Dict[int, Card]:
     # Separate flying and ground cards
     flying_cards = [c for c in cards if c.stats.is_flying]
     ground_cards = [c for c in cards if not c.stats.is_flying]
+
+    # Separate formation cards from other ground cards
+    formation_cards = [c for c in ground_cards if _has_formation_ability(c)]
+    non_formation_cards = [c for c in ground_cards if not _has_formation_ability(c)]
 
     # Score ground cards for front/back placement
     # Higher score = more suitable for front row
@@ -333,15 +365,15 @@ def place_cards_heuristic(cards: List[Card], player: int) -> Dict[int, Card]:
         front_row = [10, 11, 12, 13, 14]  # Row 2 (closest to enemy)
         middle_row = [5, 6, 7, 8, 9]      # Row 1
         back_row = [0, 1, 2, 3, 4]        # Row 0 (furthest from enemy)
-        flying_positions = [30, 31, 32]   # P1 flying zone
+        flying_positions = [30, 31, 32, 33, 34]  # P1 flying zone
     else:
         # P2: rows 3-5 (positions 15-29)
         front_row = [15, 16, 17, 18, 19]  # Row 3 (closest to enemy)
         middle_row = [20, 21, 22, 23, 24] # Row 4
         back_row = [25, 26, 27, 28, 29]   # Row 5 (furthest from enemy)
-        flying_positions = [33, 34, 35]   # P2 flying zone
+        flying_positions = [35, 36, 37, 38, 39]  # P2 flying zone
 
-    # Place flying cards
+    # Place flying cards in flying zone (5 slots available)
     for i, card in enumerate(flying_cards):
         if i < len(flying_positions):
             pos = flying_positions[i]
@@ -363,39 +395,72 @@ def place_cards_heuristic(cards: List[Card], player: int) -> Dict[int, Card]:
     middle_row.sort(key=position_priority)
     back_row.sort(key=position_priority)
 
-    # Number of cards for each row
-    n_cards = len(ground_cards)
-    n_front = min(5, n_cards)
-    n_middle = min(5, max(0, n_cards - 5))
-    n_back = max(0, n_cards - 10)
+    # Collect all available positions by row priority
+    all_positions = front_row + middle_row + back_row
+    used_positions: Set[int] = set()
 
-    # Place front row (high HP/tank cards)
-    idx = 0
-    for i in range(n_front):
-        if idx < len(ground_cards):
-            pos = front_row[i]
-            card = ground_cards[idx]
+    # Place formation cards first - try to place them adjacent to each other
+    if len(formation_cards) >= 2:
+        # Sort formation cards by front row score
+        formation_cards.sort(key=lambda c: -front_row_score(c))
+
+        # Find good adjacent position pairs in middle/front rows (for formation)
+        # Prefer horizontal pairs (same row) as they're easier to maintain
+        formation_pairs = []
+        for row_positions in [front_row, middle_row]:
+            for i in range(len(row_positions) - 1):
+                p1, p2 = row_positions[i], row_positions[i + 1]
+                # Check if horizontally adjacent
+                if abs(p1 - p2) == 1:
+                    formation_pairs.append((p1, p2))
+
+        # Place first two formation cards as a pair
+        if formation_pairs and len(formation_cards) >= 2:
+            p1, p2 = formation_pairs[0]
+            placement[p1] = formation_cards[0]
+            formation_cards[0].position = p1
+            used_positions.add(p1)
+
+            placement[p2] = formation_cards[1]
+            formation_cards[1].position = p2
+            used_positions.add(p2)
+
+            # Place remaining formation cards adjacent to existing ones if possible
+            for card in formation_cards[2:]:
+                placed = False
+                for placed_pos in [p1, p2]:
+                    for adj in _get_adjacent_positions(placed_pos):
+                        if adj not in used_positions and adj in all_positions:
+                            placement[adj] = card
+                            card.position = adj
+                            used_positions.add(adj)
+                            placed = True
+                            break
+                    if placed:
+                        break
+                if not placed:
+                    # Couldn't place adjacent, add to non-formation cards
+                    non_formation_cards.append(card)
+
+            # Remove placed formation cards
+            formation_cards = []
+
+    # Any remaining formation cards go with non-formation
+    non_formation_cards.extend(formation_cards)
+
+    # Sort remaining cards by front row score
+    non_formation_cards.sort(key=lambda c: -front_row_score(c))
+
+    # Place remaining ground cards in available positions
+    available_positions = [p for p in (front_row + middle_row + back_row)
+                          if p not in used_positions]
+
+    for card in non_formation_cards:
+        if available_positions:
+            pos = available_positions.pop(0)
             placement[pos] = card
             card.position = pos
-            idx += 1
-
-    # Place middle row
-    for i in range(n_middle):
-        if idx < len(ground_cards):
-            pos = middle_row[i]
-            card = ground_cards[idx]
-            placement[pos] = card
-            card.position = pos
-            idx += 1
-
-    # Place back row (ranged/support)
-    for i in range(n_back):
-        if idx < len(ground_cards):
-            pos = back_row[i]
-            card = ground_cards[idx]
-            placement[pos] = card
-            card.position = pos
-            idx += 1
+            used_positions.add(pos)
 
     return placement
 

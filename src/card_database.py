@@ -376,43 +376,40 @@ for _card_stats in CARD_DATABASE.values():
     register_card_stats(_card_stats)
 
 
+def _load_starter_deck_from_json() -> List[str]:
+    """Load starter deck from protected JSON file."""
+    import json
+    import os
+
+    # Find the starter deck JSON
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    deck_path = os.path.join(base_dir, "data", "decks", "Стартер леса-горы.json")
+
+    try:
+        with open(deck_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        cards = []
+        for card_data in data.get("cards", []):
+            card_name = card_data.get("name")
+            count = card_data.get("count", 1)
+            if card_name in CARD_DATABASE:
+                cards.extend([card_name] * count)
+        return cards
+    except Exception as e:
+        print(f"Error loading starter deck: {e}")
+        # Fallback to minimal deck
+        return list(CARD_DATABASE.keys())[:30]
+
+
 def create_starter_deck() -> List[str]:
-    """Returns list of card names for Player 1 (Mountains themed)."""
-    return [
-        "Циклоп",
-        "Гном-басаарг",
-        "Хобгоблин",
-        "Хранитель гор", "Хранитель гор",  # 2x for anti-swamp testing
-        "Повелитель молний",
-        "Гобрах",
-        "Ледовый охотник", "Ледовый охотник",  # 2x for Valhalla testing
-        "Горный великан", "Горный великан",  # 2x for formation testing
-        "Мастер топора",
-        "Костедробитель", "Костедробитель",  # 2x
-        "Смотритель горнила",
-        "Овражный гном",
-        "Ловец удачи",
-        "Борг",  # Stun ability testing
-        "Мразень", "Мразень",  # 2x for icicle ranged testing
-        "Дракс",  # Flying creature for P1
-    ]
+    """Returns list of card names for Player 1 (from protected starter deck)."""
+    return _load_starter_deck_from_json()
 
 
 def create_starter_deck_p2() -> List[str]:
-    """Returns list of card names for Player 2 (Forest themed)."""
-    return [
-        "Лёккен",
-        "Эльфийский воин",
-        "Бегущая по кронам",
-        "Кобольд",
-        "Клаэр",
-        "Матросы Аделаиды",
-        "Друид",
-        "Корпит", "Корпит",  # 2x
-        "Оури", "Оури",  # 2x
-        "Паук-пересмешник",
-        "Дракс",
-    ]
+    """Returns list of card names for Player 2 (from protected starter deck)."""
+    return _load_starter_deck_from_json()
 
 
 def get_card_database_hash() -> str:

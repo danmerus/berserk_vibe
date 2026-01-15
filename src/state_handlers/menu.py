@@ -1,5 +1,7 @@
 """Menu state handler."""
 
+import random
+import time
 import pygame
 from typing import Optional, TYPE_CHECKING
 
@@ -166,6 +168,9 @@ class MenuHandler(StateHandler):
         from ..ai import RandomAI, RuleBasedAI, build_ai_squad
         from ..card_database import create_starter_deck, create_starter_deck_p2
         from ..game import Game
+        from ..deck_builder import DeckBuilder
+        from ..deck_builder_renderer import DeckBuilderRenderer
+        from ..app_context import create_local_game_state
 
         state = self.ctx.ai_setup_state
         mode = state.get('mode', 'vs_ai')
@@ -173,15 +178,32 @@ class MenuHandler(StateHandler):
         ai_type_p1 = state.get('ai_type_p1', 'rulebased')
         ai_type_p2 = state.get('ai_type_p2', 'rulebased')
 
-        # Use starter decks for AI squad building
+        if mode == 'vs_ai':
+            # Human vs AI - human goes through deck/squad/placement flow
+            self.ctx.local_game_state = create_local_game_state()
+            self.ctx.local_game_state['vs_ai'] = True
+            self.ctx.local_game_state['ai_type'] = ai_type_p2
+            self.ctx.local_game_state['ai_delay'] = ai_delay
+
+            # Set up deck builder for player 1 selection
+            self.ctx.deck_builder = DeckBuilder()
+            s, ci, _, f = self.ctx.renderer.get_deck_builder_resources()
+            self.ctx.deck_builder_renderer = DeckBuilderRenderer(s, ci, f)
+            self.ctx.deck_builder_renderer.selection_mode = True
+            self.ctx.deck_builder_renderer.custom_header = "Выбор колоды - Игрок 1"
+
+            return AppState.DECK_SELECT
+
+        # AI vs AI - both players use automated squad building
+        # Seed random for variety in each game
+        random.seed(time.time_ns())
+
         deck_p1 = create_starter_deck()
         deck_p2 = create_starter_deck_p2()
 
-        # Build squads using AI
         squad_names_p1, placement_p1 = build_ai_squad(player=1, deck_cards=deck_p1)
         squad_names_p2, placement_p2 = build_ai_squad(player=2, deck_cards=deck_p2)
 
-        # Set up server and game with placed cards
         server = MatchServer()
         game = Game()
         server.game = game
@@ -200,38 +222,22 @@ class MenuHandler(StateHandler):
         self.ctx.ai_delay = ai_delay
         self.ctx.is_test_game = False
 
-        # Create AI(s) based on type selection
         def create_ai(ai_type: str, player: int):
             if ai_type == 'random':
                 return RandomAI(server, player)
             else:
                 return RuleBasedAI(server, player)
 
-        if mode == 'vs_ai':
-            # Human vs AI - human is P1, AI is P2
-            ai = create_ai(ai_type_p2, player=2)
-            self.ctx.ai_player = ai
-            self.ctx.ai_player_2 = None
-            self.ctx.human_player = 1
-            self.ctx.is_ai_vs_ai = False
-            self.ctx.match_client = client_p1
-            self.ctx.client = client_p1.game_client
-            # Set AI names for turn display
-            self.ctx.renderer.ai_name_p1 = None
-            self.ctx.renderer.ai_name_p2 = ai.name
-        else:
-            # AI vs AI - both players are AI
-            ai1 = create_ai(ai_type_p1, player=1)
-            ai2 = create_ai(ai_type_p2, player=2)
-            self.ctx.ai_player = ai1
-            self.ctx.ai_player_2 = ai2
-            self.ctx.human_player = 0  # No human player
-            self.ctx.is_ai_vs_ai = True
-            self.ctx.match_client = client_p1  # Use P1 client for viewing
-            self.ctx.client = client_p1.game_client
-            # Set AI names for turn display
-            self.ctx.renderer.ai_name_p1 = ai1.name
-            self.ctx.renderer.ai_name_p2 = ai2.name
+        ai1 = create_ai(ai_type_p1, player=1)
+        ai2 = create_ai(ai_type_p2, player=2)
+        self.ctx.ai_player = ai1
+        self.ctx.ai_player_2 = ai2
+        self.ctx.human_player = 0
+        self.ctx.is_ai_vs_ai = True
+        self.ctx.match_client = client_p1
+        self.ctx.client = client_p1.game_client
+        self.ctx.renderer.ai_name_p1 = ai1.name
+        self.ctx.renderer.ai_name_p2 = ai2.name
 
         return AppState.GAME
 

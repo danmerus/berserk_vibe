@@ -1,5 +1,7 @@
 """Squad placement state handler."""
 
+import random
+import time
 import pygame
 from typing import Optional, TYPE_CHECKING
 
@@ -104,8 +106,58 @@ class SquadPlaceHandler(StateHandler):
 
             # Local game flow
             player = self.ctx.local_game_state['current_player']
+            vs_ai = self.ctx.local_game_state.get('vs_ai', False)
+
             if player == 1:
                 self.ctx.local_game_state['placed_cards_p1'] = placed_cards
+
+                if vs_ai:
+                    # VS AI mode - auto-build AI squad and start game
+                    from ..ai import RandomAI, RuleBasedAI, build_ai_squad
+                    from ..card_database import create_starter_deck_p2
+
+                    # Seed random for variety in AI squad building
+                    random.seed(time.time_ns())
+
+                    # Build AI's squad
+                    ai_deck = create_starter_deck_p2()
+                    _, ai_placement = build_ai_squad(player=2, deck_cards=ai_deck)
+                    ai_cards = list(ai_placement.values())
+
+                    # Start the game
+                    server = MatchServer()
+                    server.setup_with_placement(placed_cards, ai_cards)
+
+                    client_p1 = LocalMatchClient(server, player=1)
+                    client_p2 = LocalMatchClient(server, player=2)
+
+                    self.ctx.server = server
+                    self.ctx.client_p1 = client_p1
+                    self.ctx.client_p2 = client_p2
+                    self.ctx.game = server.game
+                    self.ctx.match_client = client_p1
+                    self.ctx.client = client_p1.game_client
+
+                    # Create AI opponent
+                    ai_type = self.ctx.local_game_state.get('ai_type', 'rulebased')
+                    ai_delay = self.ctx.local_game_state.get('ai_delay', 0.5)
+
+                    if ai_type == 'random':
+                        ai = RandomAI(server, player=2)
+                    else:
+                        ai = RuleBasedAI(server, player=2)
+
+                    self.ctx.ai_player = ai
+                    self.ctx.ai_player_2 = None
+                    self.ctx.human_player = 1
+                    self.ctx.is_ai_vs_ai = False
+                    self.ctx.ai_delay = ai_delay
+                    self.ctx.renderer.ai_name_p1 = None
+                    self.ctx.renderer.ai_name_p2 = ai.name
+
+                    return AppState.GAME
+
+                # Local 2-player - set up P2's placement
                 self.ctx.local_game_state['current_player'] = 2
                 ps = PlacementState(player=2, squad_cards=self.ctx.local_game_state['squad_p2'])
                 s, ci, _, f = self.ctx.renderer.get_deck_builder_resources()

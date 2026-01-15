@@ -258,10 +258,22 @@ class DeckBuilderHandler(StateHandler):
 
         # Local game flow
         player = self.ctx.local_game_state['current_player']
+        vs_ai = self.ctx.local_game_state.get('vs_ai', False)
+
         if player == 1:
             self.ctx.local_game_state['deck_p1'] = deck_cards
+
+            if vs_ai:
+                # VS AI mode - skip P2 deck selection, go directly to squad selection
+                sb = SquadBuilder(player=1, deck_cards=deck_cards)
+                s, ci, _, f = self.ctx.renderer.get_deck_builder_resources()
+                sr = SquadBuilderRenderer(s, ci, f)
+                self.ctx.local_game_state['squad_builder'] = sb
+                self.ctx.local_game_state['squad_renderer'] = sr
+                return AppState.SQUAD_SELECT
+
+            # Local 2-player - set up P2's deck selection
             self.ctx.local_game_state['current_player'] = 2
-            # Reset for player 2
             self.ctx.deck_builder = DeckBuilder()
             s, ci, _, f = self.ctx.renderer.get_deck_builder_resources()
             self.ctx.deck_builder_renderer = DeckBuilderRenderer(s, ci, f)

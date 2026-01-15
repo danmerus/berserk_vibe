@@ -46,7 +46,7 @@ class MenusMixin:
         # Menu buttons
         buttons = [
             ("test_game", "Тестовая игра", True),
-            ("vs_ai", "Против бота", True),
+            ("vs_ai", "Развлечения с ботами", True),
             ("local_game", "Hotseat", True),
             ("network_game", "Игра по сети", True),
             ("deck_builder", "Создание колоды", True),

@@ -211,8 +211,33 @@ class RuleBasedAI(AIPlayer):
 
         return min_dist
 
+    def _has_formation_ability(self, card) -> bool:
+        """Check if card has a formation ability."""
+        from ..abilities import get_ability
+        for aid in card.stats.ability_ids:
+            ability = get_ability(aid)
+            if ability and ability.is_formation:
+                return True
+        return False
+
+    def _count_formation_allies_at(self, pos: int) -> int:
+        """Count adjacent allies with formation abilities at a position."""
+        if pos is None or pos >= 30:
+            return 0
+        game = self.game
+        row, col = pos // 5, pos % 5
+        count = 0
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = row + dr, col + dc
+            if 0 <= nr < 6 and 0 <= nc < 5:
+                adj_pos = nr * 5 + nc
+                adj_card = game.board.get_card(adj_pos)
+                if adj_card and adj_card.player == self.player and self._has_formation_ability(adj_card):
+                    count += 1
+        return count
+
     def _score_movement(self, action: AIAction) -> int:
-        """Score a movement action based on distance to enemies."""
+        """Score a movement action based on distance to enemies and formations."""
         game = self.game
         cmd = action.command
 
@@ -229,6 +254,22 @@ class RuleBasedAI(AIPlayer):
             for aid in card.stats.ability_ids
         )
 
+        # Check if card has formation ability
+        has_formation = self._has_formation_ability(card)
+
+        # Formation considerations - high priority to maintain/create formations
+        if has_formation:
+            current_formation_allies = self._count_formation_allies_at(from_pos)
+            new_formation_allies = self._count_formation_allies_at(to_pos)
+
+            # Penalty for breaking formation
+            if current_formation_allies > 0 and new_formation_allies == 0:
+                return 2  # Very low - don't break formation
+
+            # Bonus for creating/improving formation
+            if new_formation_allies > current_formation_allies:
+                return 75  # High priority to form up
+
         # Don't move if card can attack from current position
         current_targets = game.get_attack_targets(card)
         enemy_targets = [t for t in current_targets
@@ -236,6 +277,11 @@ class RuleBasedAI(AIPlayer):
                         game.board.get_card(t).player != self.player]
         if enemy_targets:
             # Already in attack range - low priority to move
+            # Unless moving improves formation
+            if has_formation:
+                new_allies = self._count_formation_allies_at(to_pos)
+                if new_allies > self._count_formation_allies_at(from_pos):
+                    return 60  # Formation improvement worth considering
             return 5
 
         # Check if move brings us into attack range
@@ -328,7 +374,7 @@ class RuleBasedAI(AIPlayer):
             if best:
                 return best
 
-        # Counter/movement shot - pick highest value target
+        # Counter/movement shot - pick highest value ENEMY target
         if 'shot' in inter.kind.name.lower():
             best = None
             best_value = -1
@@ -336,7 +382,8 @@ class RuleBasedAI(AIPlayer):
                 if 'skip' in action.description:
                     continue
                 target = game.board.get_card(action.command.position)
-                if target:
+                # Only target enemies!
+                if target and target.player != self.player:
                     value = target.stats.cost
                     # Bonus for low HP targets (potential kill)
                     if target.curr_life <= 2:
@@ -346,11 +393,15 @@ class RuleBasedAI(AIPlayer):
                         best_value = value
             if best:
                 return best
+            # No enemy targets - skip the shot
+            skip_actions = [a for a in actions if 'skip' in a.description]
+            if skip_actions:
+                return skip_actions[0]
 
         # Ability target selection (lunge, heals, etc.)
         if inter.kind.name == 'SELECT_ABILITY_TARGET':
             ability_id = inter.context.get('ability_id', '')
-            # Damage abilities (lunge, shot) - target enemies
+            # Damage abilities (lunge, shot) - target enemies only
             if 'lunge' in ability_id or 'shot' in ability_id or 'damage' in ability_id:
                 best = None
                 best_value = -1
@@ -366,6 +417,10 @@ class RuleBasedAI(AIPlayer):
                             best_value = value
                 if best:
                     return best
+                # No enemy targets - skip/cancel the ability
+                skip_actions = [a for a in actions if 'skip' in a.description or 'cancel' in a.description]
+                if skip_actions:
+                    return skip_actions[0]
             # Heal abilities - target damaged allies
             elif 'heal' in ability_id:
                 best = None

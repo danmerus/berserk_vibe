@@ -123,8 +123,21 @@ class SquadSelectHandler(StateHandler):
 
             # Local game flow
             player = self.ctx.local_game_state['current_player']
+            vs_ai = self.ctx.local_game_state.get('vs_ai', False)
+
             if player == 1:
                 self.ctx.local_game_state['squad_p1'] = squad
+
+                if vs_ai:
+                    # VS AI mode - skip P2 squad selection, go to placement
+                    ps = PlacementState(player=1, squad_cards=squad)
+                    s, ci, _, f = self.ctx.renderer.get_deck_builder_resources()
+                    pr = PlacementRenderer(s, ci, f)
+                    self.ctx.local_game_state['placement_state'] = ps
+                    self.ctx.local_game_state['placement_renderer'] = pr
+                    return AppState.SQUAD_PLACE
+
+                # Local 2-player - set up P2's squad selection
                 self.ctx.local_game_state['current_player'] = 2
                 sb = SquadBuilder(player=2, deck_cards=self.ctx.local_game_state['deck_p2'])
                 s, ci, _, f = self.ctx.renderer.get_deck_builder_resources()

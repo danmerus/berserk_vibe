@@ -35,6 +35,10 @@ def create_local_game_state() -> Dict[str, Any]:
         'placement_renderer': None,   # Current placement renderer
         'placed_cards_p1': None,      # P1's placed cards with positions
         'placed_cards_p2': None,      # P2's placed cards with positions
+        # VS AI mode settings
+        'vs_ai': False,               # True if human vs AI mode
+        'ai_type': 'rulebased',       # AI type for opponent ('random' or 'rulebased')
+        'ai_delay': 0.5,              # Delay between AI actions
     }
 
 
