@@ -360,9 +360,10 @@ class MenuHandler(StateHandler):
         """Update menu state."""
         # Check if update is ready to apply (quit from main thread, not background)
         if self.ctx.update_ready_to_apply:
-            import sys
+            import os
             pygame.quit()
-            sys.exit(0)
+            # Use os._exit() to skip Python cleanup - avoids DLL errors during update
+            os._exit(0)
         return None
 
     def render(self) -> None:
