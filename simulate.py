@@ -1,11 +1,11 @@
 """Headless AI vs AI simulation for testing and benchmarking.
 
 Usage:
-    python simulate.py                    # Run 1 game with default AIs
+    python simulate.py                    # Run 1 game with AI squad building
     python simulate.py -n 100             # Run 100 games
     python simulate.py -p1 random -p2 rulebased  # Specific AI types
     python simulate.py -n 100 --verbose   # Show each game result
-    python simulate.py --squad            # Use AI squad building (diverse games)
+    python simulate.py --no-squad         # Use auto-placement instead of AI squads
 """
 
 import argparse
@@ -306,8 +306,8 @@ def main():
                         help='Show each game result')
     parser.add_argument('-d', '--debug', action='store_true',
                         help='Show detailed debug info')
-    parser.add_argument('-s', '--squad', action='store_true',
-                        help='Use AI squad building (random decks, diverse games)')
+    parser.add_argument('--no-squad', action='store_true',
+                        help='Disable AI squad building (use auto-placement instead)')
 
     args = parser.parse_args()
 
@@ -317,7 +317,7 @@ def main():
         p2_type=args.player2,
         verbose=args.verbose,
         debug=args.debug,
-        use_squad_ai=args.squad
+        use_squad_ai=not args.no_squad
     )
 
 

@@ -401,8 +401,25 @@ class RuleBasedAI(AIPlayer):
         # Ability target selection (lunge, heals, etc.)
         if inter.kind.name == 'SELECT_ABILITY_TARGET':
             ability_id = inter.context.get('ability_id', '')
-            # Damage abilities (lunge, shot) - target enemies only
-            if 'lunge' in ability_id or 'shot' in ability_id or 'damage' in ability_id:
+
+            # Check if this is a heal ability
+            is_heal = 'heal' in ability_id
+
+            if is_heal:
+                # Heal abilities - target damaged allies
+                best = None
+                best_damage = -1
+                for action in actions:
+                    target = game.board.get_card(action.command.position)
+                    if target and target.player == self.player:
+                        damage_taken = target.life - target.curr_life
+                        if damage_taken > best_damage:
+                            best = action
+                            best_damage = damage_taken
+                if best:
+                    return best
+            else:
+                # All other abilities - target enemies only
                 best = None
                 best_value = -1
                 for action in actions:
@@ -417,23 +434,10 @@ class RuleBasedAI(AIPlayer):
                             best_value = value
                 if best:
                     return best
-                # No enemy targets - skip/cancel the ability
+                # No enemy targets - try to skip
                 skip_actions = [a for a in actions if 'skip' in a.description or 'cancel' in a.description]
                 if skip_actions:
                     return skip_actions[0]
-            # Heal abilities - target damaged allies
-            elif 'heal' in ability_id:
-                best = None
-                best_damage = -1
-                for action in actions:
-                    target = game.board.get_card(action.command.position)
-                    if target and target.player == self.player:
-                        damage_taken = target.life - target.curr_life
-                        if damage_taken > best_damage:
-                            best = action
-                            best_damage = damage_taken
-                if best:
-                    return best
 
         # Heal confirmation - always accept
         if inter.kind.name == 'CONFIRM_HEAL':

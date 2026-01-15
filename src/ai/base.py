@@ -374,6 +374,34 @@ class AIPlayer(ABC):
                     # Ability needs target - verify targets exist before adding
                     targets = game._get_ability_targets(card, ability)
                     if targets:
+                        # Determine if this is a healing/buff ability (targets allies)
+                        # or offensive ability (targets enemies)
+                        from ..abilities import EffectType
+                        is_heal_ability = (
+                            ability.heal_amount > 0 or
+                            ability.effect_type == EffectType.HEAL_TARGET or
+                            'heal' in ability_id
+                        )
+
+                        if is_heal_ability:
+                            # Heal abilities target allies - check if any damaged allies exist
+                            ally_targets = [
+                                t for t in targets
+                                if game.board.get_card(t) and
+                                game.board.get_card(t).player == self.player
+                            ]
+                            if not ally_targets:
+                                continue  # Skip - no ally targets for heal
+                        else:
+                            # All other targeted abilities default to targeting enemies
+                            enemy_targets = [
+                                t for t in targets
+                                if game.board.get_card(t) and
+                                game.board.get_card(t).player != self.player
+                            ]
+                            if not enemy_targets:
+                                continue  # Skip - no enemy targets
+
                         actions.append(AIAction(
                             cmd_use_ability(self.player, card.id, ability_id),
                             f"{card.name} use {ability_id}"
