@@ -2,7 +2,7 @@
 Это попытка навайбкодить берсерк-онлайн, но в новой редакции.
 В данный момент есть один стартёр, буду работать над режимом с ботом/новыми картами пока не надоест.
 
-[Cсылка](https://drive.google.com/file/d/1S5l7lwCNMI1MQxtS8dT5aS0aRO4I9gOT/view?usp=sharing) на .exe
+[Cсылка](https://drive.google.com/file/d/18D1TKT4m3QQcFO2iH6aARdTQJRPdDaaD/view?usp=drive_link) на .exe
 
 ### Чтобы играть по сети:
 - Можно подключиться к уже работающему серверу, его адрес вбит по-умолчанию.
