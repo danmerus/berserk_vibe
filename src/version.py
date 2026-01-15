@@ -1,6 +1,6 @@
 """Version info and update configuration."""
 
-__version__ = "0.3.7"
+__version__ = "0.3.8"
 
 # GitHub repository for updates
 GITHUB_OWNER = "danmerus"  # Change this to your GitHub username
