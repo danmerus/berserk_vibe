@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from .network_ui import NetworkUI
     from .network.client import NetworkClient
     from .chat import ChatUI
+    from .ai import AIPlayer
 
 
 def create_local_game_state() -> Dict[str, Any]:
@@ -87,6 +88,22 @@ class AppContext:
     is_test_game: bool = False
     test_game_controlled_player: int = 1
 
+    # AI opponent
+    ai_player: Optional['AIPlayer'] = None
+    ai_player_2: Optional['AIPlayer'] = None  # Second AI for AI vs AI mode
+    human_player: int = 1  # Which player number is human (1 or 2)
+    ai_delay: float = 0.5  # Delay between AI actions in seconds
+    is_ai_vs_ai: bool = False  # True if watching AI vs AI
+
+    # AI setup popup state
+    show_ai_setup: bool = False
+    ai_setup_state: Dict[str, Any] = field(default_factory=lambda: {
+        'mode': 'vs_ai',  # 'vs_ai' or 'ai_vs_ai'
+        'ai_delay': 0.5,
+        'ai_type_p1': 'rulebased',
+        'ai_type_p2': 'rulebased',
+    })
+
     # Network prep state
     network_prep_state: Optional[Dict[str, Any]] = None
 
@@ -117,7 +134,12 @@ class AppContext:
         self.client = None
         self.is_test_game = False
         self.test_game_controlled_player = 1
+        self.ai_player = None
+        self.ai_player_2 = None
+        self.human_player = 1
+        self.is_ai_vs_ai = False
         self.show_pause_menu = False
+        self.show_ai_setup = False
         # Clear renderer state
         if self.renderer:
             self.renderer.clear_dice_display()

@@ -67,6 +67,10 @@ class RendererBase:
         # Which player's perspective to render from (1 = P1 at bottom, 2 = P2 at bottom)
         self.viewing_player = 1
 
+        # AI names for display (None = human player)
+        self.ai_name_p1: Optional[str] = None
+        self.ai_name_p2: Optional[str] = None
+
         # Initialize FontManager with UI scale
         FontManager.init(scale=UI_SCALE)
 

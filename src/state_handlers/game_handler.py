@@ -29,8 +29,10 @@ class GameHandler(StateHandler):
         from ..constants import AppState, GamePhase
         from ..commands import cmd_confirm
 
-        # Sync active player BEFORE processing events (matches original main.py behavior)
-        self._update_active_player()
+        # Sync active player BEFORE processing events (hotseat mode only)
+        # In AI mode, human always views from their perspective
+        if self.ctx.ai_player is None and not self.ctx.is_ai_vs_ai:
+            self._update_active_player()
 
         game = self.ctx.game
         client = self.ctx.client
@@ -40,6 +42,11 @@ class GameHandler(StateHandler):
             return None
 
         if event.type == pygame.KEYDOWN:
+            # In AI vs AI mode, only allow ESC for pause menu
+            if self.ctx.is_ai_vs_ai:
+                if event.key == pygame.K_ESCAPE:
+                    return self._handle_keydown(event)
+                return None
             return self._handle_keydown(event)
 
         elif event.type == pygame.MOUSEWHEEL:
@@ -49,6 +56,9 @@ class GameHandler(StateHandler):
 
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             mx, my = self.ctx.renderer.screen_to_game_coords(*event.pos)
+            # In AI vs AI mode, only allow pause menu and game over popup clicks
+            if self.ctx.is_ai_vs_ai:
+                return self._handle_click_spectator(mx, my)
             return self._handle_click(mx, my)
 
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
@@ -114,6 +124,31 @@ class GameHandler(StateHandler):
             self._send_command(cmd_confirm(player, False))
             return None
 
+        return None
+
+    def _handle_click_spectator(self, mx: int, my: int) -> Optional['AppState']:
+        """Handle left click in AI vs AI spectator mode (limited actions)."""
+        from ..constants import AppState, GamePhase
+
+        game = self.ctx.game
+        renderer = self.ctx.renderer
+
+        # Pause menu
+        if self.ctx.show_pause_menu:
+            return self._handle_pause_menu_click(mx, my)
+
+        # Game over popup - click to dismiss and return to menu
+        if game.phase == GamePhase.GAME_OVER and renderer.game_over_popup:
+            renderer.hide_game_over_popup()
+            self.ctx.reset_local_game()
+            return AppState.MENU
+
+        # Card popup - allow dismissing
+        if renderer.popup_card:
+            renderer.hide_popup()
+            return None
+
+        # No other actions allowed in spectator mode
         return None
 
     def _handle_click(self, mx: int, my: int) -> Optional['AppState']:
@@ -240,8 +275,16 @@ class GameHandler(StateHandler):
         # Update client animations
         client.update(dt)
 
-        # Switch active player for hotseat mode
-        self._update_active_player()
+        # Switch active player for hotseat mode (when no AI)
+        if self.ctx.ai_player is None and not self.ctx.is_ai_vs_ai:
+            self._update_active_player()
+
+        # Let AI take action if it's AI's turn (includes AI vs AI mode)
+        if (self.ctx.ai_player or self.ctx.is_ai_vs_ai) and game.phase == GamePhase.MAIN:
+            # Decrement AI action timer
+            if hasattr(self, '_ai_action_timer') and self._ai_action_timer > 0:
+                self._ai_action_timer -= dt
+            self._update_ai()
 
         # Show game over popup when game ends
         if game.phase == GamePhase.GAME_OVER and not renderer.game_over_popup:
@@ -249,6 +292,39 @@ class GameHandler(StateHandler):
             renderer.show_game_over_popup(winner if winner is not None else 0)
 
         return None
+
+    def _update_ai(self):
+        """Let AI take action if it's AI's turn."""
+        # Determine which AI should act
+        ai = None
+        if self.ctx.is_ai_vs_ai:
+            # AI vs AI mode - check both AIs
+            if self.ctx.ai_player and self.ctx.ai_player.is_my_turn():
+                ai = self.ctx.ai_player
+            elif self.ctx.ai_player_2 and self.ctx.ai_player_2.is_my_turn():
+                ai = self.ctx.ai_player_2
+        else:
+            # Human vs AI mode
+            if self.ctx.ai_player and self.ctx.ai_player.is_my_turn():
+                ai = self.ctx.ai_player
+
+        if not ai:
+            return
+
+        # Delay between AI actions (configurable)
+        if not hasattr(self, '_ai_action_timer'):
+            self._ai_action_timer = 0.0
+
+        if self._ai_action_timer > 0:
+            return  # Still waiting
+
+        action = ai.choose_action()
+        if action:
+            result = self.ctx.server.apply(action.command)
+            if result.events:
+                process_game_events(self.ctx.game, self.ctx.renderer, result.events)
+            # Reset timer for next action using configured delay
+            self._ai_action_timer = self.ctx.ai_delay
 
     def _update_active_player(self):
         """Update active player for hotseat mode."""
@@ -301,8 +377,24 @@ class GameHandler(StateHandler):
         self.ctx.show_pause_menu = False
         # Clear stale visual effects from previous games
         self.ctx.renderer.clear_all_effects()
-        # Initialize active player and viewing_player immediately
-        self._update_active_player()
+        # Reset AI action timer
+        self._ai_action_timer = 0.0
+
+        # Set up viewing mode based on game type
+        if self.ctx.is_ai_vs_ai:
+            # AI vs AI mode: always view from P1 perspective
+            self.ctx.match_client = self.ctx.client_p1
+            self.ctx.client = self.ctx.match_client.game_client
+            self.ctx.renderer.viewing_player = 1
+        elif self.ctx.ai_player:
+            # Human vs AI mode: human always views from their perspective
+            human = self.ctx.human_player
+            self.ctx.match_client = self.ctx.client_p1 if human == 1 else self.ctx.client_p2
+            self.ctx.client = self.ctx.match_client.game_client
+            self.ctx.renderer.viewing_player = human
+        else:
+            # Hotseat: Initialize active player and viewing_player immediately
+            self._update_active_player()
 
     def on_exit(self) -> None:
         """Called when leaving game state."""

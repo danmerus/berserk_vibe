@@ -46,9 +46,9 @@ class MenusMixin:
         # Menu buttons
         buttons = [
             ("test_game", "Тестовая игра", True),
+            ("vs_ai", "Против бота", True),
             ("local_game", "Hotseat", True),
             ("network_game", "Игра по сети", True),
-            ("bot_game", "Игра с ботом", False),
             ("deck_builder", "Создание колоды", True),
             ("settings", "Настройки", True),
             ("exit", "Выход", True),
@@ -490,3 +490,267 @@ class MenusMixin:
             'indicator': self.font_indicator,
         }
         return self.screen, self.card_images, self.card_images_full, fonts
+
+    # =========================================================================
+    # AI SETUP POPUP
+    # =========================================================================
+
+    def draw_ai_setup_popup(self, ai_setup_state: dict):
+        """Draw AI game setup popup.
+
+        ai_setup_state should contain:
+            - mode: 'vs_ai' or 'ai_vs_ai'
+            - ai_delay: float (0.0 - 2.0)
+            - ai_type_p1: str ('random' or 'rulebased')
+            - ai_type_p2: str ('random' or 'rulebased')
+        """
+        self.ai_setup_buttons = []
+
+        # Draw menu background first
+        if hasattr(self, 'menu_background') and self.menu_background is not None:
+            self.screen.blit(self.menu_background, (0, 0))
+        else:
+            self.screen.fill(COLOR_BG)
+
+        # Semi-transparent overlay
+        overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 180))
+        self.screen.blit(overlay, (0, 0))
+
+        # Popup panel
+        panel_width = scaled(450)
+        panel_height = scaled(380)
+        panel_x = (WINDOW_WIDTH - panel_width) // 2
+        panel_y = (WINDOW_HEIGHT - panel_height) // 2
+        panel_rect = pygame.Rect(panel_x, panel_y, panel_width, panel_height)
+
+        pygame.draw.rect(self.screen, (40, 35, 50), panel_rect)
+        pygame.draw.rect(self.screen, (120, 100, 140), panel_rect, 3)
+
+        # Scale and blit to window
+        self.window.fill((0, 0, 0))
+        if self.scale != 1.0:
+            scaled_w = int(self.BASE_WIDTH * self.scale)
+            scaled_h = int(self.BASE_HEIGHT * self.scale)
+            scaled_surface = pygame.transform.smoothscale(self.screen, (scaled_w, scaled_h))
+            self.window.blit(scaled_surface, (self.offset_x, self.offset_y))
+        else:
+            self.window.blit(self.screen, (self.offset_x, self.offset_y))
+
+        # Now draw native resolution elements
+        self._draw_ai_setup_native(ai_setup_state, panel_x, panel_y, panel_width, panel_height)
+
+        pygame.display.flip()
+
+    def _draw_ai_setup_native(self, state: dict, panel_x: int, panel_y: int,
+                               panel_width: int, panel_height: int):
+        """Draw AI setup popup elements at native resolution."""
+        border_width = max(1, int(2 * self.scale))
+
+        mode = state.get('mode', 'vs_ai')
+        ai_delay = state.get('ai_delay', 0.5)
+        ai_type_p1 = state.get('ai_type_p1', 'rulebased')
+        ai_type_p2 = state.get('ai_type_p2', 'rulebased')
+
+        # Title
+        title_font = self.get_native_font('title_small')
+        title = title_font.render("ИГРА С БОТОМ", True, (247, 211, 82))
+        panel_win_rect = self.game_to_window_rect(pygame.Rect(panel_x, panel_y, panel_width, panel_height))
+        _, win_y = self.game_to_window_coords(0, panel_y + scaled(15))
+        title_win_x = panel_win_rect.x + (panel_win_rect.width - title.get_width()) // 2
+        self.window.blit(title, (title_win_x, win_y))
+
+        medium_font = self.get_native_font('medium')
+        small_font = self.get_native_font('small')
+
+        # Mode selection buttons
+        mode_y = panel_y + scaled(60)
+        mode_label = small_font.render("Режим:", True, COLOR_TEXT)
+        label_x, label_y = self.game_to_window_coords(panel_x + scaled(20), mode_y)
+        self.window.blit(mode_label, (label_x, label_y))
+
+        btn_width = scaled(180)
+        btn_height = scaled(35)
+        btn_spacing = scaled(10)
+
+        # "Play vs AI" button
+        vs_ai_rect = pygame.Rect(panel_x + scaled(20), mode_y + scaled(25), btn_width, btn_height)
+        vs_ai_win = self.game_to_window_rect(vs_ai_rect)
+        is_vs_ai = mode == 'vs_ai'
+        bg_color = (80, 100, 60) if is_vs_ai else (60, 50, 70)
+        border_color = (150, 180, 100) if is_vs_ai else (100, 80, 120)
+        pygame.draw.rect(self.window, bg_color, vs_ai_win)
+        pygame.draw.rect(self.window, border_color, vs_ai_win, border_width)
+        text = small_font.render("Играть против ИИ", True, COLOR_TEXT)
+        self.window.blit(text, (vs_ai_win.x + (vs_ai_win.width - text.get_width()) // 2,
+                                vs_ai_win.y + (vs_ai_win.height - text.get_height()) // 2))
+        self.ai_setup_buttons.append(("mode_vs_ai", vs_ai_rect))
+
+        # "AI vs AI" button
+        ai_ai_rect = pygame.Rect(panel_x + scaled(20) + btn_width + btn_spacing,
+                                  mode_y + scaled(25), btn_width, btn_height)
+        ai_ai_win = self.game_to_window_rect(ai_ai_rect)
+        is_ai_ai = mode == 'ai_vs_ai'
+        bg_color = (80, 100, 60) if is_ai_ai else (60, 50, 70)
+        border_color = (150, 180, 100) if is_ai_ai else (100, 80, 120)
+        pygame.draw.rect(self.window, bg_color, ai_ai_win)
+        pygame.draw.rect(self.window, border_color, ai_ai_win, border_width)
+        text = small_font.render("Смотреть ИИ vs ИИ", True, COLOR_TEXT)
+        self.window.blit(text, (ai_ai_win.x + (ai_ai_win.width - text.get_width()) // 2,
+                                ai_ai_win.y + (ai_ai_win.height - text.get_height()) // 2))
+        self.ai_setup_buttons.append(("mode_ai_vs_ai", ai_ai_rect))
+
+        # AI Type selection
+        ai_type_y = mode_y + scaled(80)
+
+        ai_types = [('random', 'Random'), ('rulebased', 'Rule-based')]
+        dropdown_width = scaled(150)
+        dropdown_height = scaled(32)
+
+        if mode == 'vs_ai':
+            # Only show P2 AI selection
+            ai_label = small_font.render("Тип ИИ противника:", True, COLOR_TEXT)
+            ai_x, ai_y = self.game_to_window_coords(panel_x + scaled(20), ai_type_y)
+            self.window.blit(ai_label, (ai_x, ai_y))
+
+            self._draw_ai_dropdown(panel_x + scaled(20), ai_type_y + scaled(25),
+                                   dropdown_width, dropdown_height, ai_type_p2,
+                                   ai_types, "ai_p2", border_width, small_font)
+        else:
+            # Show both P1 and P2 AI selection
+            p1_label = small_font.render("ИИ Игрока 1:", True, COLOR_TEXT)
+            p1_x, p1_y = self.game_to_window_coords(panel_x + scaled(20), ai_type_y)
+            self.window.blit(p1_label, (p1_x, p1_y))
+
+            self._draw_ai_dropdown(panel_x + scaled(20), ai_type_y + scaled(25),
+                                   dropdown_width, dropdown_height, ai_type_p1,
+                                   ai_types, "ai_p1", border_width, small_font)
+
+            p2_label = small_font.render("ИИ Игрока 2:", True, COLOR_TEXT)
+            p2_x, p2_y = self.game_to_window_coords(panel_x + scaled(230), ai_type_y)
+            self.window.blit(p2_label, (p2_x, p2_y))
+
+            self._draw_ai_dropdown(panel_x + scaled(230), ai_type_y + scaled(25),
+                                   dropdown_width, dropdown_height, ai_type_p2,
+                                   ai_types, "ai_p2", border_width, small_font)
+
+        # Delay slider
+        delay_y = ai_type_y + scaled(85)
+        delay_label = small_font.render(f"Задержка хода ИИ: {ai_delay:.1f} сек", True, COLOR_TEXT)
+        delay_x, delay_label_y = self.game_to_window_coords(panel_x + scaled(20), delay_y)
+        self.window.blit(delay_label, (delay_x, delay_label_y))
+
+        # Slider track
+        slider_y = delay_y + scaled(30)
+        slider_width = scaled(380)
+        slider_height = scaled(8)
+        slider_x = panel_x + scaled(20)
+
+        slider_rect = pygame.Rect(slider_x, slider_y, slider_width, slider_height)
+        slider_win = self.game_to_window_rect(slider_rect)
+        pygame.draw.rect(self.window, (60, 60, 70), slider_win)
+        pygame.draw.rect(self.window, (100, 100, 110), slider_win, 1)
+
+        # Slider fill (based on delay value 0-2)
+        fill_width = int(slider_win.width * (ai_delay / 2.0))
+        fill_rect = pygame.Rect(slider_win.x, slider_win.y, fill_width, slider_win.height)
+        pygame.draw.rect(self.window, (100, 140, 100), fill_rect)
+
+        # Slider handle
+        handle_x = slider_win.x + fill_width - scaled(6)
+        handle_rect = pygame.Rect(handle_x, slider_win.y - scaled(4), scaled(12), slider_win.height + scaled(8))
+        pygame.draw.rect(self.window, (150, 180, 150), handle_rect)
+        pygame.draw.rect(self.window, (200, 220, 200), handle_rect, 1)
+
+        # Store slider area for click detection
+        self.ai_setup_buttons.append(("delay_slider", slider_rect))
+
+        # Delay preset buttons
+        preset_y = slider_y + scaled(20)
+        preset_width = scaled(60)
+        preset_height = scaled(28)
+        presets = [(0.0, "0"), (0.5, "0.5"), (1.0, "1.0"), (2.0, "2.0")]
+
+        for i, (val, label) in enumerate(presets):
+            preset_x = slider_x + i * (preset_width + scaled(10))
+            preset_rect = pygame.Rect(preset_x, preset_y, preset_width, preset_height)
+            preset_win = self.game_to_window_rect(preset_rect)
+
+            is_current = abs(ai_delay - val) < 0.1
+            bg_color = (80, 100, 60) if is_current else (50, 50, 60)
+            border_color = (120, 150, 100) if is_current else (80, 80, 90)
+
+            pygame.draw.rect(self.window, bg_color, preset_win)
+            pygame.draw.rect(self.window, border_color, preset_win, 1)
+
+            text = small_font.render(label, True, COLOR_TEXT)
+            self.window.blit(text, (preset_win.x + (preset_win.width - text.get_width()) // 2,
+                                    preset_win.y + (preset_win.height - text.get_height()) // 2))
+            self.ai_setup_buttons.append((f"delay_{val}", preset_rect))
+
+        # Start and Cancel buttons
+        action_y = panel_y + panel_height - scaled(60)
+        action_width = scaled(140)
+        action_height = scaled(40)
+
+        # Cancel button
+        cancel_rect = pygame.Rect(panel_x + scaled(50), action_y, action_width, action_height)
+        cancel_win = self.game_to_window_rect(cancel_rect)
+        pygame.draw.rect(self.window, (80, 50, 50), cancel_win)
+        pygame.draw.rect(self.window, (140, 80, 80), cancel_win, border_width)
+        text = medium_font.render("Отмена", True, COLOR_TEXT)
+        self.window.blit(text, (cancel_win.x + (cancel_win.width - text.get_width()) // 2,
+                                cancel_win.y + (cancel_win.height - text.get_height()) // 2))
+        self.ai_setup_buttons.append(("cancel", cancel_rect))
+
+        # Start button
+        start_rect = pygame.Rect(panel_x + panel_width - scaled(50) - action_width,
+                                  action_y, action_width, action_height)
+        start_win = self.game_to_window_rect(start_rect)
+        pygame.draw.rect(self.window, (50, 80, 50), start_win)
+        pygame.draw.rect(self.window, (80, 140, 80), start_win, border_width)
+        text = medium_font.render("Начать", True, COLOR_TEXT)
+        self.window.blit(text, (start_win.x + (start_win.width - text.get_width()) // 2,
+                                start_win.y + (start_win.height - text.get_height()) // 2))
+        self.ai_setup_buttons.append(("start", start_rect))
+
+    def _draw_ai_dropdown(self, x: int, y: int, width: int, height: int,
+                          current_value: str, options: list, btn_prefix: str,
+                          border_width: int, font):
+        """Draw AI type selection as toggle buttons."""
+        btn_width = width // len(options) - scaled(2)
+
+        for i, (value, label) in enumerate(options):
+            btn_x = x + i * (btn_width + scaled(4))
+            btn_rect = pygame.Rect(btn_x, y, btn_width, height)
+            btn_win = self.game_to_window_rect(btn_rect)
+
+            is_selected = current_value == value
+            bg_color = (80, 100, 60) if is_selected else (50, 50, 60)
+            border_color = (120, 150, 100) if is_selected else (80, 80, 90)
+
+            pygame.draw.rect(self.window, bg_color, btn_win)
+            pygame.draw.rect(self.window, border_color, btn_win, border_width)
+
+            text = font.render(label, True, COLOR_TEXT)
+            self.window.blit(text, (btn_win.x + (btn_win.width - text.get_width()) // 2,
+                                    btn_win.y + (btn_win.height - text.get_height()) // 2))
+
+            self.ai_setup_buttons.append((f"{btn_prefix}_{value}", btn_rect))
+
+    def get_clicked_ai_setup_button(self, mouse_x: int, mouse_y: int) -> Optional[str]:
+        """Check if an AI setup button was clicked. Returns button_id or None."""
+        if not hasattr(self, 'ai_setup_buttons'):
+            return None
+        for btn_id, rect in self.ai_setup_buttons:
+            if rect.collidepoint(mouse_x, mouse_y):
+                return btn_id
+        return None
+
+    def get_ai_delay_from_slider(self, mouse_x: int, mouse_y: int, slider_rect: pygame.Rect) -> Optional[float]:
+        """Calculate delay value from mouse position on slider."""
+        if not slider_rect.collidepoint(mouse_x, mouse_y):
+            return None
+        relative_x = mouse_x - slider_rect.x
+        ratio = max(0.0, min(1.0, relative_x / slider_rect.width))
+        return round(ratio * 2.0, 1)  # 0.0 to 2.0

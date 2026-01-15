@@ -106,7 +106,13 @@ class UIMixin:
 
             # Current player indicator (blue if it's your turn, red if opponent's)
             player_color = COLOR_SELF if state['current_player'] == self.viewing_player else COLOR_OPPONENT
-            player_text = f"Ход: Игрок {state['current_player']}"
+            current = state['current_player']
+            # Show AI name if the current player is an AI
+            ai_name = self.ai_name_p1 if current == 1 else self.ai_name_p2
+            if ai_name:
+                player_text = f"Ход: {ai_name} (P{current})"
+            else:
+                player_text = f"Ход: Игрок {current}"
             text_surface = large_font.render(player_text, True, player_color)
             x, y = self.game_to_window_coords(20, 20)
             self.window.blit(text_surface, (x, y))

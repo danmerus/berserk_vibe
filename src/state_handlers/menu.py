@@ -26,8 +26,18 @@ class MenuHandler(StateHandler):
         """Handle menu events."""
         from ..constants import AppState
 
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE and self.ctx.show_ai_setup:
+                self.ctx.show_ai_setup = False
+                return None
+
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             mx, my = self.ctx.renderer.screen_to_game_coords(*event.pos)
+
+            # Handle AI setup popup if open
+            if self.ctx.show_ai_setup:
+                return self._handle_ai_setup_click(mx, my)
+
             return self._handle_click(mx, my)
 
         return None
@@ -47,6 +57,11 @@ class MenuHandler(StateHandler):
         if btn == 'test_game':
             return self._start_test_game()
 
+        elif btn == 'vs_ai':
+            # Show AI setup popup instead of directly starting
+            self.ctx.show_ai_setup = True
+            return None
+
         elif btn == 'local_game':
             return self._start_local_game_flow()
 
@@ -61,6 +76,61 @@ class MenuHandler(StateHandler):
 
         elif btn == 'exit':
             self._should_exit = True
+
+        return None
+
+    def _handle_ai_setup_click(self, mx: int, my: int) -> Optional['AppState']:
+        """Handle clicks in AI setup popup."""
+        from ..constants import AppState
+
+        btn = self.ctx.renderer.get_clicked_ai_setup_button(mx, my)
+        if not btn:
+            return None
+
+        state = self.ctx.ai_setup_state
+
+        # Mode selection
+        if btn == 'mode_vs_ai':
+            state['mode'] = 'vs_ai'
+        elif btn == 'mode_ai_vs_ai':
+            state['mode'] = 'ai_vs_ai'
+
+        # AI type selection
+        elif btn == 'ai_p1_random':
+            state['ai_type_p1'] = 'random'
+        elif btn == 'ai_p1_rulebased':
+            state['ai_type_p1'] = 'rulebased'
+        elif btn == 'ai_p2_random':
+            state['ai_type_p2'] = 'random'
+        elif btn == 'ai_p2_rulebased':
+            state['ai_type_p2'] = 'rulebased'
+
+        # Delay presets
+        elif btn.startswith('delay_'):
+            try:
+                delay_val = float(btn.split('_')[1])
+                state['ai_delay'] = delay_val
+            except (ValueError, IndexError):
+                pass
+
+        # Delay slider
+        elif btn == 'delay_slider':
+            # Find the slider rect and calculate delay
+            for btn_id, rect in self.ctx.renderer.ai_setup_buttons:
+                if btn_id == 'delay_slider':
+                    delay = self.ctx.renderer.get_ai_delay_from_slider(mx, my, rect)
+                    if delay is not None:
+                        state['ai_delay'] = delay
+                    break
+
+        # Cancel
+        elif btn == 'cancel':
+            self.ctx.show_ai_setup = False
+
+        # Start game
+        elif btn == 'start':
+            self.ctx.show_ai_setup = False
+            return self._start_ai_game_with_settings()
 
         return None
 
@@ -83,6 +153,70 @@ class MenuHandler(StateHandler):
         self.ctx.match_client = client_p1  # P1 starts
         self.ctx.client = client_p1.game_client
         self.ctx.is_test_game = False  # Don't show test mode indicator
+        # Clear AI names for hotseat mode
+        self.ctx.renderer.ai_name_p1 = None
+        self.ctx.renderer.ai_name_p2 = None
+
+        return AppState.GAME
+
+    def _start_ai_game_with_settings(self) -> 'AppState':
+        """Start a game with AI based on setup settings."""
+        from ..constants import AppState
+        from ..match import MatchServer, LocalMatchClient
+        from ..ai import RandomAI, RuleBasedAI
+
+        state = self.ctx.ai_setup_state
+        mode = state.get('mode', 'vs_ai')
+        ai_delay = state.get('ai_delay', 0.5)
+        ai_type_p1 = state.get('ai_type_p1', 'rulebased')
+        ai_type_p2 = state.get('ai_type_p2', 'rulebased')
+
+        server = MatchServer()
+        server.setup_game()
+        server.game.auto_place_for_testing()
+
+        client_p1 = LocalMatchClient(server, player=1)
+        client_p2 = LocalMatchClient(server, player=2)
+
+        self.ctx.server = server
+        self.ctx.client_p1 = client_p1
+        self.ctx.client_p2 = client_p2
+        self.ctx.game = server.game
+        self.ctx.ai_delay = ai_delay
+        self.ctx.is_test_game = False
+
+        # Create AI(s) based on type selection
+        def create_ai(ai_type: str, player: int):
+            if ai_type == 'random':
+                return RandomAI(server, player)
+            else:
+                return RuleBasedAI(server, player)
+
+        if mode == 'vs_ai':
+            # Human vs AI - human is P1, AI is P2
+            ai = create_ai(ai_type_p2, player=2)
+            self.ctx.ai_player = ai
+            self.ctx.ai_player_2 = None
+            self.ctx.human_player = 1
+            self.ctx.is_ai_vs_ai = False
+            self.ctx.match_client = client_p1
+            self.ctx.client = client_p1.game_client
+            # Set AI names for turn display
+            self.ctx.renderer.ai_name_p1 = None
+            self.ctx.renderer.ai_name_p2 = ai.name
+        else:
+            # AI vs AI - both players are AI
+            ai1 = create_ai(ai_type_p1, player=1)
+            ai2 = create_ai(ai_type_p2, player=2)
+            self.ctx.ai_player = ai1
+            self.ctx.ai_player_2 = ai2
+            self.ctx.human_player = 0  # No human player
+            self.ctx.is_ai_vs_ai = True
+            self.ctx.match_client = client_p1  # Use P1 client for viewing
+            self.ctx.client = client_p1.game_client
+            # Set AI names for turn display
+            self.ctx.renderer.ai_name_p1 = ai1.name
+            self.ctx.renderer.ai_name_p2 = ai2.name
 
         return AppState.GAME
 
@@ -122,7 +256,10 @@ class MenuHandler(StateHandler):
 
     def render(self) -> None:
         """Render the menu."""
-        self.ctx.renderer.draw_menu()
+        if self.ctx.show_ai_setup:
+            self.ctx.renderer.draw_ai_setup_popup(self.ctx.ai_setup_state)
+        else:
+            self.ctx.renderer.draw_menu()
 
     @property
     def should_exit(self) -> bool:

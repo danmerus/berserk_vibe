@@ -128,11 +128,17 @@ class CommandsMixin:
                 if card and self.awaiting_defender:
                     if self.interaction.can_select_card_id(cmd.card_id):
                         return self.choose_defender(card), self.pop_events()
+                # Handle valhalla target selection
+                if card and self.awaiting_valhalla:
+                    if self.interaction.can_select_card_id(cmd.card_id):
+                        return self.select_valhalla_target(card.position), self.pop_events()
             return False, self.pop_events()
 
         elif cmd.type == CommandType.CHOOSE_AMOUNT:
             if cmd.amount is not None and self.awaiting_counter_selection:
                 self.set_counter_selection(cmd.amount)
+                # Also confirm to proceed (like clicking OK button)
+                self.confirm_counter_selection()
                 return True, self.pop_events()
             return False, self.pop_events()
 
