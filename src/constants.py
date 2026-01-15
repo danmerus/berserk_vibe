@@ -341,6 +341,32 @@ class UILayout:
     POPUP_PAUSE_BORDER = (80, 80, 100)
 
     # -------------------------------------------------------------------------
+    # UPDATE BANNER (main menu, when new version available)
+    # -------------------------------------------------------------------------
+    UPDATE_BANNER_HEIGHT = 150
+    UPDATE_BANNER_BG = (40, 100, 60)
+    UPDATE_BANNER_BORDER = (60, 140, 80)
+    UPDATE_BANNER_BORDER_WIDTH = 3
+    UPDATE_BANNER_TEXT_Y = 16          # Text Y offset from top
+    UPDATE_BANNER_BTN_HEIGHT = 38
+    UPDATE_BANNER_BTN_PADDING = 24     # Extra padding on button sides
+    UPDATE_BANNER_BTN_SPACING = 12     # Space between buttons
+    UPDATE_BANNER_X_BTN_SIZE = 38
+    # Progress bar (during download)
+    UPDATE_PROGRESS_BAR_WIDTH = 400
+    UPDATE_PROGRESS_BAR_HEIGHT = 25
+    UPDATE_PROGRESS_BAR_Y = 40         # Y offset from banner top
+    UPDATE_PROGRESS_BG = (30, 60, 40)
+    UPDATE_PROGRESS_FILL = (100, 200, 120)
+    # Button colors
+    UPDATE_BTN_INSTALL_BG = (50, 120, 70)
+    UPDATE_BTN_INSTALL_BORDER = (70, 160, 90)
+    UPDATE_BTN_PAGE_BG = (60, 80, 100)
+    UPDATE_BTN_PAGE_BORDER = (80, 110, 140)
+    UPDATE_BTN_DISMISS_BG = (100, 50, 50)
+    UPDATE_BTN_DISMISS_BORDER = (140, 70, 70)
+
+    # -------------------------------------------------------------------------
     # DECK BUILDER
     # -------------------------------------------------------------------------
     DECK_BUILDER_LIBRARY_X = 10

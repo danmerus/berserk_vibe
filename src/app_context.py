@@ -122,6 +122,15 @@ class AppContext:
     # UI flags
     show_pause_menu: bool = False
 
+    # Update checker state
+    update_info: Optional[Any] = None  # UpdateInfo if update available
+    update_check_done: bool = False
+    update_dismissed: bool = False  # User dismissed the update notification
+    update_downloading: bool = False  # Currently downloading update
+    update_progress: float = 0.0  # Download progress 0.0-1.0
+    update_download_path: Optional[str] = None  # Path to downloaded file
+    update_ready_to_apply: bool = False  # Flag to quit from main loop after download
+
     # Draw offer state (network game)
     draw_offered_by_us: bool = False
     draw_offered_by_opponent: bool = False

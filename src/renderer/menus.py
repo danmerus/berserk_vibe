@@ -5,7 +5,7 @@ from typing import Optional, List, Tuple, TYPE_CHECKING
 from ..constants import (
     WINDOW_WIDTH, WINDOW_HEIGHT,
     COLOR_BG, COLOR_TEXT,
-    scaled, UI_SCALE, UILayout
+    scaled, UI_SCALE, UILayout,
 )
 
 if TYPE_CHECKING:
@@ -89,12 +89,202 @@ class MenusMixin:
                 self.menu_buttons.append((btn_id, game_rect))
 
         # Version at bottom
+        from ..version import __version__
         version_font = self.get_native_font('small')
-        version_text = version_font.render("v0.1 - MVP", True, (80, 80, 90))
+        version_text = version_font.render(f"v{__version__}", True, (80, 80, 90))
         version_x, version_y = self.game_to_window_coords(int(20 * UI_SCALE), WINDOW_HEIGHT - int(30 * UI_SCALE))
         self.window.blit(version_text, (version_x, version_y))
 
         pygame.display.flip()
+
+    def draw_menu_no_flip(self):
+        """Draw the main menu without calling display.flip() - for compositing with banner."""
+        self.menu_buttons = []
+
+        # Clear screen with background image or fallback to solid color
+        if hasattr(self, 'menu_background') and self.menu_background is not None:
+            self.screen.blit(self.menu_background, (0, 0))
+        else:
+            self.screen.fill(COLOR_BG)
+
+        # Scale and blit background to window first
+        self.window.fill((0, 0, 0))
+        if self.scale != 1.0:
+            scaled_w = int(self.BASE_WIDTH * self.scale)
+            scaled_h = int(self.BASE_HEIGHT * self.scale)
+            scaled_surface = pygame.transform.smoothscale(self.screen, (scaled_w, scaled_h))
+            self.window.blit(scaled_surface, (self.offset_x, self.offset_y))
+        else:
+            self.window.blit(self.screen, (self.offset_x, self.offset_y))
+
+        # Now draw text and buttons directly to window at native resolution
+        title_font = self.get_native_font('title')
+        title = title_font.render("БЕРСЕРК-vibe", True, (247, 211, 82))
+        game_area_width = int(self.BASE_WIDTH * self.scale) if self.scale > 0 else self.BASE_WIDTH
+        title_win_x = self.offset_x + game_area_width // 2 - title.get_width() // 2
+        _, title_win_y = self.game_to_window_coords(0, int(80 * UI_SCALE))
+        self.window.blit(title, (title_win_x, title_win_y))
+
+        # Menu buttons
+        buttons = [
+            ("test_game", "Тестовая игра", True),
+            ("vs_ai", "Развлечения с ботами", True),
+            ("local_game", "Hotseat", True),
+            ("network_game", "Игра по сети", True),
+            ("deck_builder", "Создание колоды", True),
+            ("settings", "Настройки", True),
+            ("exit", "Выход", True),
+        ]
+
+        btn_width = int(280 * UI_SCALE)
+        btn_height = int(45 * UI_SCALE)
+        btn_spacing = int(15 * UI_SCALE)
+        start_y = int(220 * UI_SCALE)
+
+        btn_font = self.get_native_font('medium')
+
+        for i, (btn_id, btn_text, is_active) in enumerate(buttons):
+            btn_x = (WINDOW_WIDTH - btn_width) // 2
+            btn_y = start_y + i * (btn_height + btn_spacing)
+            game_rect = pygame.Rect(btn_x, btn_y, btn_width, btn_height)
+            win_rect = self.game_to_window_rect(game_rect)
+
+            if is_active:
+                bg_color = (60, 50, 70)
+                border_color = (120, 100, 140)
+                text_color = COLOR_TEXT
+            else:
+                bg_color = (40, 40, 45)
+                border_color = (70, 70, 80)
+                text_color = (100, 100, 110)
+
+            border_width = max(1, int(2 * self.scale))
+            pygame.draw.rect(self.window, bg_color, win_rect)
+            pygame.draw.rect(self.window, border_color, win_rect, border_width)
+
+            text_surface = btn_font.render(btn_text, True, text_color)
+            text_x = win_rect.x + (win_rect.width - text_surface.get_width()) // 2
+            text_y = win_rect.y + (win_rect.height - text_surface.get_height()) // 2
+            self.window.blit(text_surface, (text_x, text_y))
+
+            if is_active:
+                self.menu_buttons.append((btn_id, game_rect))
+
+        # Version at bottom
+        from ..version import __version__
+        version_font = self.get_native_font('small')
+        version_text = version_font.render(f"v{__version__}", True, (80, 80, 90))
+        version_x, version_y = self.game_to_window_coords(int(20 * UI_SCALE), WINDOW_HEIGHT - int(30 * UI_SCALE))
+        self.window.blit(version_text, (version_x, version_y))
+
+    def draw_update_banner(self, update_info, download_progress: float = None) -> pygame.Rect:
+        """Draw update available banner at top of screen.
+
+        Args:
+            update_info: UpdateInfo object
+            download_progress: None = not downloading, 0.0-1.0 = progress
+        """
+        L = UILayout  # Shorthand for layout constants
+
+        banner_height = int(L.UPDATE_BANNER_HEIGHT * self.scale)
+        banner_rect = pygame.Rect(self.offset_x, self.offset_y, int(self.BASE_WIDTH * self.scale), banner_height)
+
+        # Draw banner background
+        pygame.draw.rect(self.window, L.UPDATE_BANNER_BG, banner_rect)
+        pygame.draw.rect(self.window, L.UPDATE_BANNER_BORDER, banner_rect, L.UPDATE_BANNER_BORDER_WIDTH)
+
+        font = self.get_native_font('medium')
+        btn_font = self.get_native_font('medium')
+
+        if download_progress is not None:
+            # Show download progress
+            text = f"Загрузка v{update_info.version}... {int(download_progress * 100)}%"
+            text_surface = font.render(text, True, (255, 255, 255))
+            text_x = banner_rect.centerx - text_surface.get_width() // 2
+            text_y = banner_rect.y + int(L.UPDATE_BANNER_TEXT_Y * self.scale)
+            self.window.blit(text_surface, (text_x, text_y))
+
+            # Progress bar
+            bar_width = int(L.UPDATE_PROGRESS_BAR_WIDTH * self.scale)
+            bar_height = int(L.UPDATE_PROGRESS_BAR_HEIGHT * self.scale)
+            bar_x = banner_rect.centerx - bar_width // 2
+            bar_y = banner_rect.y + int(L.UPDATE_PROGRESS_BAR_Y * self.scale)
+            pygame.draw.rect(self.window, L.UPDATE_PROGRESS_BG, (bar_x, bar_y, bar_width, bar_height))
+            fill_width = int(bar_width * download_progress)
+            pygame.draw.rect(self.window, L.UPDATE_PROGRESS_FILL, (bar_x, bar_y, fill_width, bar_height))
+            pygame.draw.rect(self.window, L.UPDATE_BANNER_BORDER, (bar_x, bar_y, bar_width, bar_height), 2)
+
+            # Clear button rects during download
+            self._update_install_rect = None
+            self._update_open_rect = None
+            self._update_dismiss_rect = None
+        else:
+            # Show update available with buttons
+            text = f"Доступна версия {update_info.version}!"
+            text_surface = font.render(text, True, (255, 255, 255))
+            text_x = banner_rect.x + int(20 * self.scale)
+            text_y = banner_rect.centery - text_surface.get_height() // 2
+            self.window.blit(text_surface, (text_x, text_y))
+
+            # Buttons on the right
+            btn_height = int(L.UPDATE_BANNER_BTN_HEIGHT * self.scale)
+            btn_y = banner_rect.centery - btn_height // 2
+
+            # X button (dismiss)
+            x_size = int(L.UPDATE_BANNER_X_BTN_SIZE * self.scale)
+            x_rect = pygame.Rect(banner_rect.right - x_size - int(15 * self.scale), btn_y, x_size, btn_height)
+            pygame.draw.rect(self.window, L.UPDATE_BTN_DISMISS_BG, x_rect)
+            pygame.draw.rect(self.window, L.UPDATE_BTN_DISMISS_BORDER, x_rect, 2)
+            x_text = btn_font.render("X", True, (255, 255, 255))
+            self.window.blit(x_text, (x_rect.centerx - x_text.get_width() // 2, x_rect.centery - x_text.get_height() // 2))
+
+            # "Open page" button
+            open_text = btn_font.render("Страница", True, (255, 255, 255))
+            open_width = open_text.get_width() + int(L.UPDATE_BANNER_BTN_PADDING * self.scale)
+            open_rect = pygame.Rect(x_rect.x - open_width - int(L.UPDATE_BANNER_BTN_SPACING * self.scale), btn_y, open_width, btn_height)
+            pygame.draw.rect(self.window, L.UPDATE_BTN_PAGE_BG, open_rect)
+            pygame.draw.rect(self.window, L.UPDATE_BTN_PAGE_BORDER, open_rect, 2)
+            self.window.blit(open_text, (open_rect.centerx - open_text.get_width() // 2, open_rect.centery - open_text.get_height() // 2))
+
+            # "Install" button (only if .exe download available)
+            if update_info.download_url and update_info.download_url.endswith('.exe'):
+                install_text = btn_font.render("Установить", True, (255, 255, 255))
+                install_width = install_text.get_width() + int(L.UPDATE_BANNER_BTN_PADDING * self.scale)
+                install_rect = pygame.Rect(open_rect.x - install_width - int(L.UPDATE_BANNER_BTN_SPACING * self.scale), btn_y, install_width, btn_height)
+                pygame.draw.rect(self.window, L.UPDATE_BTN_INSTALL_BG, install_rect)
+                pygame.draw.rect(self.window, L.UPDATE_BTN_INSTALL_BORDER, install_rect, 2)
+                self.window.blit(install_text, (install_rect.centerx - install_text.get_width() // 2, install_rect.centery - install_text.get_height() // 2))
+
+                # Store in game coords
+                self._update_install_rect = pygame.Rect(
+                    int((install_rect.x - self.offset_x) / self.scale), 0,
+                    int(install_rect.width / self.scale), int(L.UPDATE_BANNER_HEIGHT * UI_SCALE)
+                )
+            else:
+                self._update_install_rect = None
+
+            # Store button rects in game coords for click handling
+            self._update_dismiss_rect = pygame.Rect(
+                int((x_rect.x - self.offset_x) / self.scale), 0,
+                int(x_rect.width / self.scale), int(L.UPDATE_BANNER_HEIGHT * UI_SCALE)
+            )
+            self._update_open_rect = pygame.Rect(
+                int((open_rect.x - self.offset_x) / self.scale), 0,
+                int(open_rect.width / self.scale), int(L.UPDATE_BANNER_HEIGHT * UI_SCALE)
+            )
+
+        self._update_banner_rect = pygame.Rect(0, 0, WINDOW_WIDTH, int(L.UPDATE_BANNER_HEIGHT * UI_SCALE))
+        return self._update_banner_rect
+
+    def get_update_banner_click(self, mouse_x: int, mouse_y: int) -> Optional[str]:
+        """Check if update banner was clicked. Returns 'install', 'open', 'dismiss', or None."""
+        if hasattr(self, '_update_dismiss_rect') and self._update_dismiss_rect and self._update_dismiss_rect.collidepoint(mouse_x, mouse_y):
+            return 'dismiss'
+        if hasattr(self, '_update_install_rect') and self._update_install_rect and self._update_install_rect.collidepoint(mouse_x, mouse_y):
+            return 'install'
+        if hasattr(self, '_update_open_rect') and self._update_open_rect and self._update_open_rect.collidepoint(mouse_x, mouse_y):
+            return 'open'
+        return None
 
     def get_clicked_menu_button(self, mouse_x: int, mouse_y: int) -> Optional[str]:
         """Check if a menu button was clicked. Returns button_id or None."""

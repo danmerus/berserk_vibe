@@ -18,11 +18,31 @@ class MenuHandler(StateHandler):
     Handles:
     - Menu button clicks (test game, local game, network, settings, exit)
     - State transitions to other screens
+    - Update notification banner
     """
 
     def __init__(self, ctx: 'AppContext'):
         super().__init__(ctx)
         self._should_exit = False
+
+    def on_enter(self) -> None:
+        """Called when entering menu state. Check for updates."""
+        # Check for updates once on first menu entry
+        if not self.ctx.update_check_done:
+            self.ctx.update_check_done = True
+            self._check_for_updates()
+
+    def _check_for_updates(self):
+        """Start async update check."""
+        try:
+            from ..updater import check_for_update_async
+
+            def on_update_result(update_info):
+                self.ctx.update_info = update_info
+
+            check_for_update_async(on_update_result)
+        except Exception as e:
+            print(f"Update check failed: {e}")
 
     def handle_event(self, event: pygame.event.Event) -> Optional['AppState']:
         """Handle menu events."""
@@ -36,6 +56,19 @@ class MenuHandler(StateHandler):
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             mx, my = self.ctx.renderer.screen_to_game_coords(*event.pos)
 
+            # Handle update banner clicks first (but not during download)
+            if self.ctx.update_info and not self.ctx.update_dismissed and not self.ctx.update_downloading:
+                banner_click = self.ctx.renderer.get_update_banner_click(mx, my)
+                if banner_click == 'dismiss':
+                    self.ctx.update_dismissed = True
+                    return None
+                elif banner_click == 'open':
+                    self._handle_open_release_page()
+                    return None
+                elif banner_click == 'install':
+                    self._handle_install_update()
+                    return None
+
             # Handle AI setup popup if open
             if self.ctx.show_ai_setup:
                 return self._handle_ai_setup_click(mx, my)
@@ -43,6 +76,52 @@ class MenuHandler(StateHandler):
             return self._handle_click(mx, my)
 
         return None
+
+    def _handle_open_release_page(self):
+        """Open GitHub releases page in browser."""
+        from ..updater import open_release_page
+        open_release_page()
+
+    def _handle_install_update(self):
+        """Start downloading and installing the update."""
+        import threading
+        from ..updater import download_update, apply_update
+
+        self.ctx.update_downloading = True
+        self.ctx.update_progress = 0.0
+
+        def progress_callback(downloaded: int, total: int):
+            if total > 0:
+                self.ctx.update_progress = downloaded / total
+
+        def download_thread():
+            try:
+                path = download_update(self.ctx.update_info, progress_callback)
+                if path:
+                    self.ctx.update_download_path = path
+                    self.ctx.update_progress = 1.0
+                    # Try to apply update
+                    if apply_update(path):
+                        # Set flag for main loop to quit - don't call pygame from thread
+                        self.ctx.update_ready_to_apply = True
+                    else:
+                        # apply_update failed (probably not running as .exe)
+                        # Open release page instead
+                        from ..updater import open_release_page
+                        open_release_page()
+                        self.ctx.update_downloading = False
+                        self.ctx.update_dismissed = True  # Hide banner
+                else:
+                    # Download failed, open release page
+                    from ..updater import open_release_page
+                    open_release_page()
+                    self.ctx.update_downloading = False
+            except Exception as e:
+                print(f"Update failed: {e}")
+                self.ctx.update_downloading = False
+
+        thread = threading.Thread(target=download_thread, daemon=True)
+        thread.start()
 
     def _handle_click(self, mx: int, my: int) -> Optional['AppState']:
         """Handle mouse click on menu."""
@@ -279,14 +358,31 @@ class MenuHandler(StateHandler):
 
     def update(self, dt: float) -> Optional['AppState']:
         """Update menu state."""
+        # Check if update is ready to apply (quit from main thread, not background)
+        if self.ctx.update_ready_to_apply:
+            import sys
+            pygame.quit()
+            sys.exit(0)
         return None
 
     def render(self) -> None:
         """Render the menu."""
+        # Draw update banner on top if update available (before flip)
+        show_update = self.ctx.update_info and not self.ctx.update_dismissed
+
         if self.ctx.show_ai_setup:
             self.ctx.renderer.draw_ai_setup_popup(self.ctx.ai_setup_state)
+            if show_update:
+                progress = self.ctx.update_progress if self.ctx.update_downloading else None
+                self.ctx.renderer.draw_update_banner(self.ctx.update_info, progress)
+                pygame.display.flip()
         else:
-            self.ctx.renderer.draw_menu()
+            # draw_menu calls flip() internally, so we need to draw banner before that
+            self.ctx.renderer.draw_menu_no_flip()
+            if show_update:
+                progress = self.ctx.update_progress if self.ctx.update_downloading else None
+                self.ctx.renderer.draw_update_banner(self.ctx.update_info, progress)
+            pygame.display.flip()
 
     @property
     def should_exit(self) -> bool:
