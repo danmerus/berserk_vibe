@@ -18,7 +18,7 @@ class AbilitiesMixin:
 
     def get_usable_abilities(self, card: 'Card') -> List['Ability']:
         """Get list of active abilities the card can use right now."""
-        usable = []
+        usable =  []
 
         for ability_id in card.stats.ability_ids:
             ability = get_ability(ability_id)
