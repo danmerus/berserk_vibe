@@ -348,7 +348,7 @@ class UILayout:
     UPDATE_BANNER_BORDER = (60, 140, 80)
     UPDATE_BANNER_BORDER_WIDTH = 3
     UPDATE_BANNER_TEXT_Y = 16          # Text Y offset from top
-    UPDATE_BANNER_BTN_HEIGHT = 38
+    UPDATE_BANNER_BTN_HEIGHT = 50
     UPDATE_BANNER_BTN_PADDING = 24     # Extra padding on button sides
     UPDATE_BANNER_BTN_SPACING = 12     # Space between buttons
     UPDATE_BANNER_X_BTN_SIZE = 38
