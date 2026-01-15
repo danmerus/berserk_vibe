@@ -109,7 +109,7 @@ def check_for_update_async(callback: Callable[[Optional[UpdateInfo]], None]) -> 
 
 def download_update(update: UpdateInfo,
                     progress_callback: Optional[Callable[[int, int], None]] = None) -> Optional[str]:
-    """Download update to temp file.
+    """Download update to file next to current exe.
 
     Args:
         update: UpdateInfo with download URL
@@ -132,11 +132,17 @@ def download_update(update: UpdateInfo,
 
         total_size = int(resp.headers.get('content-length', 0))
 
-        # Create temp file
-        fd, temp_path = tempfile.mkstemp(suffix='.exe')
+        # Download to same folder as current exe to avoid temp folder issues
+        if getattr(sys, 'frozen', False):
+            exe_dir = os.path.dirname(sys.executable)
+            download_path = os.path.join(exe_dir, 'Berserk_update.exe')
+        else:
+            # Fallback to temp for non-frozen mode
+            fd, download_path = tempfile.mkstemp(suffix='.exe')
+            os.close(fd)
 
         downloaded = 0
-        with os.fdopen(fd, 'wb') as f:
+        with open(download_path, 'wb') as f:
             for chunk in resp.iter_content(chunk_size=8192):
                 if chunk:
                     f.write(chunk)
@@ -144,7 +150,7 @@ def download_update(update: UpdateInfo,
                     if progress_callback:
                         progress_callback(downloaded, total_size)
 
-        return temp_path
+        return download_path
 
     except Exception as e:
         print(f"Download failed: {e}")
@@ -175,11 +181,16 @@ def apply_update(downloaded_exe: str) -> bool:
 
     # Get the process ID so batch can wait for it
     pid = os.getpid()
+    exe_dir = os.path.dirname(current_exe)
 
     # Create updater batch script with better cleanup
     batch_content = f'''@echo off
-echo Updating Berserk...
-echo Waiting for old process to exit...
+title Berserk Updater
+echo ========================================
+echo         Berserk Auto-Updater
+echo ========================================
+echo.
+echo Waiting for game to close...
 
 :waitloop
 tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul
@@ -188,39 +199,56 @@ if not errorlevel 1 (
     goto waitloop
 )
 
-echo Old process exited. Cleaning up...
-timeout /t 1 /nobreak >nul
+echo Game closed.
+echo.
+echo Cleaning up old temp files...
+timeout /t 2 /nobreak >nul
 
 rem Clean up old PyInstaller temp folders
-for /d %%i in ("%TEMP%\\_MEI*") do rd /s /q "%%i" 2>nul
+for /d %%i in ("%TEMP%\\_MEI*") do (
+    echo Removing %%i
+    rd /s /q "%%i" 2>nul
+)
 
+echo.
 echo Replacing executable...
+del "{current_exe}" 2>nul
+timeout /t 1 /nobreak >nul
 move /y "{downloaded_exe}" "{current_exe}"
 if errorlevel 1 (
     echo Move failed, trying copy...
     copy /y "{downloaded_exe}" "{current_exe}"
     if errorlevel 1 (
-        echo Update failed!
+        echo.
+        echo ========================================
+        echo UPDATE FAILED!
+        echo Please download manually from GitHub.
+        echo ========================================
         pause
         exit /b 1
     )
     del "{downloaded_exe}" 2>nul
 )
 
-echo Update complete! Starting new version...
-timeout /t 1 /nobreak >nul
+echo.
+echo ========================================
+echo Update complete! Starting game...
+echo ========================================
+timeout /t 2 /nobreak >nul
+cd /d "{exe_dir}"
 start "" "{current_exe}"
+timeout /t 1 /nobreak >nul
 del "%~f0"
 '''
 
-    batch_path = os.path.join(tempfile.gettempdir(), 'berserk_updater.bat')
+    batch_path = os.path.join(exe_dir, 'berserk_updater.bat')
     with open(batch_path, 'w') as f:
         f.write(batch_content)
 
-    # Launch batch script and exit
+    # Launch batch script with VISIBLE window for debugging
     subprocess.Popen(
-        ['cmd', '/c', batch_path],
-        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
+        ['cmd', '/c', 'start', 'cmd', '/c', batch_path],
+        shell=True
     )
 
     return True

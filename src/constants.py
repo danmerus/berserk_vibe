@@ -355,7 +355,7 @@ class UILayout:
     # Progress bar (during download)
     UPDATE_PROGRESS_BAR_WIDTH = 500
     UPDATE_PROGRESS_BAR_HEIGHT = 25
-    UPDATE_PROGRESS_BAR_Y = 40         # Y offset from banner top
+    UPDATE_PROGRESS_BAR_Y = 80         # Y offset from banner top
     UPDATE_PROGRESS_BG = (30, 60, 40)
     UPDATE_PROGRESS_FILL = (100, 200, 120)
     # Button colors
