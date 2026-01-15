@@ -156,8 +156,9 @@ def apply_update(downloaded_exe: str) -> bool:
 
     Creates a batch script that:
     1. Waits for current process to exit
-    2. Replaces the exe
-    3. Restarts the app
+    2. Cleans up old PyInstaller temp folders
+    3. Replaces the exe
+    4. Restarts the app
 
     Returns True if update process started successfully.
     """
@@ -172,17 +173,42 @@ def apply_update(downloaded_exe: str) -> bool:
         print("Auto-update only works in frozen .exe mode")
         return False
 
-    # Create updater batch script
+    # Get the process ID so batch can wait for it
+    pid = os.getpid()
+
+    # Create updater batch script with better cleanup
     batch_content = f'''@echo off
 echo Updating Berserk...
-timeout /t 2 /nobreak >nul
+echo Waiting for old process to exit...
+
+:waitloop
+tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul
+if not errorlevel 1 (
+    timeout /t 1 /nobreak >nul
+    goto waitloop
+)
+
+echo Old process exited. Cleaning up...
+timeout /t 1 /nobreak >nul
+
+rem Clean up old PyInstaller temp folders
+for /d %%i in ("%TEMP%\\_MEI*") do rd /s /q "%%i" 2>nul
+
+echo Replacing executable...
 move /y "{downloaded_exe}" "{current_exe}"
 if errorlevel 1 (
-    echo Update failed!
-    pause
-    exit /b 1
+    echo Move failed, trying copy...
+    copy /y "{downloaded_exe}" "{current_exe}"
+    if errorlevel 1 (
+        echo Update failed!
+        pause
+        exit /b 1
+    )
+    del "{downloaded_exe}" 2>nul
 )
-echo Update complete!
+
+echo Update complete! Starting new version...
+timeout /t 1 /nobreak >nul
 start "" "{current_exe}"
 del "%~f0"
 '''
