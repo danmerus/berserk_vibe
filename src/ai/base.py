@@ -355,6 +355,10 @@ class AIPlayer(ABC):
                 if not ability or ability.ability_type != AbilityType.ACTIVE:
                     continue
 
+                # Skip instant abilities (like luck) - they use cmd_use_instant in priority phase
+                if ability.is_instant:
+                    continue
+
                 # Check if ability can be used
                 if not card.can_use_ability(ability_id):
                     continue

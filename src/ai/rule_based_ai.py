@@ -175,11 +175,44 @@ class RuleBasedAI(AIPlayer):
             # No enemy targets - don't use
             return 5
 
+        # Counter-gaining abilities - check if max counters reached
+        from ..abilities import get_ability, EffectType
+        ability = get_ability(ability_id)
+        if ability and ability.effect_type == EffectType.GAIN_COUNTER:
+            card = game.board.get_card_by_id(cmd.card_id)
+            if card and card.max_counters > 0 and card.counters >= card.max_counters:
+                return 1  # Already at max counters - very low priority
+
         # Other abilities
         return 70
 
+    def _get_distance_to_nearest_enemy(self, pos: int) -> int:
+        """Calculate Manhattan distance from position to nearest enemy.
+
+        Returns large number if no enemies exist.
+        """
+        game = self.game
+        if pos is None or pos >= 30:  # Flying zone - use special handling
+            return 100
+
+        row = pos // 5
+        col = pos % 5
+
+        min_dist = 100
+        enemy_player = 2 if self.player == 1 else 1
+
+        for enemy in game.board.get_all_cards(enemy_player):
+            if enemy.position is None or enemy.position >= 30:
+                continue  # Skip flying enemies for ground distance
+            enemy_row = enemy.position // 5
+            enemy_col = enemy.position % 5
+            dist = abs(row - enemy_row) + abs(col - enemy_col)
+            min_dist = min(min_dist, dist)
+
+        return min_dist
+
     def _score_movement(self, action: AIAction) -> int:
-        """Score a movement action."""
+        """Score a movement action based on distance to enemies."""
         game = self.game
         cmd = action.command
 
@@ -225,26 +258,36 @@ class RuleBasedAI(AIPlayer):
         if has_ranged:
             return 10
 
-        # Score based on advancing toward enemy
-        # When no attacks available, advancing should beat end_turn (50)
-        if self.player == 1:
-            # P1 wants to move to higher rows (toward P2)
-            from_row = from_pos // 5
-            to_row = to_pos // 5
-            if to_row > from_row:
-                return 60  # Advancing - higher than end_turn
-            elif to_row < from_row:
-                return 3  # Retreating
-        else:
-            # P2 wants to move to lower rows (toward P1)
-            from_row = from_pos // 5
-            to_row = to_pos // 5
-            if to_row < from_row:
-                return 60  # Advancing - higher than end_turn
-            elif to_row > from_row:
-                return 3  # Retreating
+        # Calculate row advancement
+        from_row = from_pos // 5
+        to_row = to_pos // 5
 
-        return 15  # Lateral movement
+        # Determine if this is row advancement toward enemy
+        if self.player == 1:
+            row_advancement = to_row - from_row  # P1 wants higher rows
+        else:
+            row_advancement = from_row - to_row  # P2 wants lower rows
+
+        if row_advancement > 0:
+            # Advancing toward enemy row - high priority
+            return 65
+        elif row_advancement < 0:
+            # Retreating - very low priority
+            return 3
+
+        # Lateral movement (same row) - use distance to pick best column
+        current_dist = self._get_distance_to_nearest_enemy(from_pos)
+        new_dist = self._get_distance_to_nearest_enemy(to_pos)
+
+        if new_dist < current_dist:
+            # Lateral move that gets closer to enemy - good!
+            return 55
+        elif new_dist > current_dist:
+            # Lateral move away from enemy
+            return 10
+        else:
+            # Same distance - neutral lateral move
+            return 20
 
     def _choose_interaction_action(self, actions: List[AIAction]) -> AIAction:
         """Choose best action for an interaction."""

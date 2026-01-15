@@ -163,7 +163,9 @@ class MenuHandler(StateHandler):
         """Start a game with AI based on setup settings."""
         from ..constants import AppState
         from ..match import MatchServer, LocalMatchClient
-        from ..ai import RandomAI, RuleBasedAI
+        from ..ai import RandomAI, RuleBasedAI, build_ai_squad
+        from ..card_database import create_starter_deck, create_starter_deck_p2
+        from ..game import Game
 
         state = self.ctx.ai_setup_state
         mode = state.get('mode', 'vs_ai')
@@ -171,9 +173,22 @@ class MenuHandler(StateHandler):
         ai_type_p1 = state.get('ai_type_p1', 'rulebased')
         ai_type_p2 = state.get('ai_type_p2', 'rulebased')
 
+        # Use starter decks for AI squad building
+        deck_p1 = create_starter_deck()
+        deck_p2 = create_starter_deck_p2()
+
+        # Build squads using AI
+        squad_names_p1, placement_p1 = build_ai_squad(player=1, deck_cards=deck_p1)
+        squad_names_p2, placement_p2 = build_ai_squad(player=2, deck_cards=deck_p2)
+
+        # Set up server and game with placed cards
         server = MatchServer()
-        server.setup_game()
-        server.game.auto_place_for_testing()
+        game = Game()
+        server.game = game
+
+        p1_cards = list(placement_p1.values())
+        p2_cards = list(placement_p2.values())
+        game.setup_game_with_placement(p1_cards, p2_cards)
 
         client_p1 = LocalMatchClient(server, player=1)
         client_p2 = LocalMatchClient(server, player=2)

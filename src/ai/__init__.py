@@ -24,5 +24,16 @@ Usage:
 from .base import AIPlayer, AIAction
 from .random_ai import RandomAI
 from .rule_based_ai import RuleBasedAI
+from .squad_ai import (
+    score_card,
+    select_squad_greedy,
+    select_squad_optimized,
+    place_cards_heuristic,
+    build_ai_squad,
+)
 
-__all__ = ['AIPlayer', 'AIAction', 'RandomAI', 'RuleBasedAI']
+__all__ = [
+    'AIPlayer', 'AIAction', 'RandomAI', 'RuleBasedAI',
+    'score_card', 'select_squad_greedy', 'select_squad_optimized',
+    'place_cards_heuristic', 'build_ai_squad',
+]
