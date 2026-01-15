@@ -106,6 +106,10 @@ class MenuHandler(StateHandler):
             state['ai_type_p2'] = 'random'
         elif btn == 'ai_p2_rulebased':
             state['ai_type_p2'] = 'rulebased'
+        elif btn == 'ai_p1_utility':
+            state['ai_type_p1'] = 'utility'
+        elif btn == 'ai_p2_utility':
+            state['ai_type_p2'] = 'utility'
 
         # Delay presets
         elif btn.startswith('delay_'):
@@ -165,7 +169,7 @@ class MenuHandler(StateHandler):
         """Start a game with AI based on setup settings."""
         from ..constants import AppState
         from ..match import MatchServer, LocalMatchClient
-        from ..ai import RandomAI, RuleBasedAI, build_ai_squad
+        from ..ai import RandomAI, RuleBasedAI, UtilityAI, build_ai_squad
         from ..card_database import create_starter_deck, create_starter_deck_p2
         from ..game import Game
         from ..deck_builder import DeckBuilder
@@ -225,6 +229,8 @@ class MenuHandler(StateHandler):
         def create_ai(ai_type: str, player: int):
             if ai_type == 'random':
                 return RandomAI(server, player)
+            elif ai_type == 'utility':
+                return UtilityAI(server, player)
             else:
                 return RuleBasedAI(server, player)
 

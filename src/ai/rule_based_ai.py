@@ -10,9 +10,108 @@ import random
 from typing import Optional, List, TYPE_CHECKING
 
 from .base import AIPlayer, AIAction
+from ..card import Card
 
 if TYPE_CHECKING:
     from ..match import MatchServer
+
+
+def front_row_score(card: Card) -> float:
+    """Calculate how suitable a card is for front row / close to enemies.
+
+    Higher score = more suitable for being close to enemies (tank/fighter).
+    Lower score = should stay back (ranged/healer).
+    """
+    score = 0.0
+    # High HP = tanky, wants to be in front
+    score += card.life * 2
+    # High attack = frontline fighter
+    score += sum(card.stats.attack) / 3 * 1.5
+    # Ability-based adjustments
+    for aid in card.stats.ability_ids:
+        if 'defender' in aid:
+            score += 25  # Defenders WANT to be in front
+        if 'tough' in aid or 'armor' in aid:
+            score += 20  # Damage reduction = front line
+        if 'unlimited_defender' in aid:
+            score += 15
+        # Ranged = back row (negative)
+        if 'shot' in aid:
+            score -= 25
+        if 'lunge' in aid:
+            score -= 15
+        # Healing = back row
+        if 'heal' in aid:
+            score -= 20
+        # Low cost creatures are expendable - front
+        if card.stats.cost <= 3:
+            score += 10
+    return score
+
+
+def is_key_defender(card: Card) -> bool:
+    """Check if card is a key defender that should stay untapped.
+
+    Key defenders have defender_no_tap or unlimited_defender abilities,
+    or are specifically Лёккен (the best defender in the game).
+    """
+    # Лёккен is the most important defender - never tap if possible
+    if 'ёккен' in card.name.lower():
+        return True
+
+    for aid in card.stats.ability_ids:
+        if 'defender_no_tap' in aid:
+            return True
+        if 'unlimited_defender' in aid:
+            return True
+    return False
+
+
+def has_ranged_ability(card: Card) -> bool:
+    """Check if card has ranged attack abilities (shot/lunge)."""
+    for aid in card.stats.ability_ids:
+        if 'shot' in aid or 'lunge' in aid:
+            return True
+    return False
+
+
+def has_heal_ability(card: Card) -> bool:
+    """Check if card has healing abilities."""
+    for aid in card.stats.ability_ids:
+        if 'heal' in aid:
+            return True
+    return False
+
+
+def should_maximize_distance(card: Card) -> bool:
+    """Check if card should try to stay far from enemies."""
+    return has_ranged_ability(card) or has_heal_ability(card)
+
+
+def get_optimal_range(card: Card) -> tuple:
+    """Get the optimal distance range for a card based on its abilities.
+
+    Returns (min_dist, max_dist) where the card should try to stay.
+    For melee cards: (1, 1) - be adjacent
+    For ranged cards: (min_range, max_range) - stay within ability range
+    """
+    from ..abilities import get_ability
+
+    best_min = 1
+    best_max = 1  # Default: melee
+
+    for aid in card.stats.ability_ids:
+        ability = get_ability(aid)
+        if ability and ability.range > 1:
+            # Found a ranged ability
+            min_r = ability.min_range if ability.min_range > 0 else 1
+            max_r = min(ability.range, 10)  # Cap at 10 for sanity
+            # Use the best (longest) range we find
+            if max_r > best_max:
+                best_min = min_r
+                best_max = max_r
+
+    return (best_min, best_max)
 
 
 class RuleBasedAI(AIPlayer):
@@ -112,10 +211,26 @@ class RuleBasedAI(AIPlayer):
 
         score = 100  # Base attack score
 
+        # KEY DEFENDER PENALTY: Prefer not to tap key defenders unless valuable
+        # Key defenders (Лёккен, defender_no_tap, unlimited_defender) are more valuable untapped
+        if is_key_defender(attacker):
+            # Check if this is a guaranteed kill
+            atk_values = attacker.get_effective_attack()
+            strong_dmg = atk_values[2] if len(atk_values) > 2 else atk_values[-1]
+            if target.curr_life <= strong_dmg:
+                # Guaranteed kill - worth it, minimal penalty
+                score -= 20
+            elif target.tapped:
+                # Safe attack on tapped target - small penalty
+                score -= 40
+            else:
+                # Risky attack that taps our defender - moderate penalty
+                score -= 80
+
         # Hidden cards (face_down) - we don't know their real stats
         # Don't prioritize them as kills since HP=1 is fake
         if target.face_down:
-            return 80  # Moderate priority - attack reveals them
+            return max(score - 20, 10)  # Moderate priority - attack reveals them
 
         # Bonus for potential kill (target HP <= attacker's strong damage)
         atk_values = attacker.get_effective_attack()
@@ -211,6 +326,25 @@ class RuleBasedAI(AIPlayer):
 
         return min_dist
 
+    def _count_adjacent_enemies(self, pos: int) -> int:
+        """Count enemy cards adjacent to a position (orthogonal only)."""
+        if pos is None or pos >= 30:
+            return 0
+
+        game = self.game
+        row, col = pos // 5, pos % 5
+        count = 0
+
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = row + dr, col + dc
+            if 0 <= nr < 6 and 0 <= nc < 5:
+                adj_pos = nr * 5 + nc
+                adj_card = game.board.get_card(adj_pos)
+                if adj_card and adj_card.player != self.player:
+                    count += 1
+
+        return count
+
     def _has_formation_ability(self, card) -> bool:
         """Check if card has a formation ability."""
         from ..abilities import get_ability
@@ -237,7 +371,7 @@ class RuleBasedAI(AIPlayer):
         return count
 
     def _score_movement(self, action: AIAction) -> int:
-        """Score a movement action based on distance to enemies and formations."""
+        """Score a movement action based on distance to enemies, formations, and card role."""
         game = self.game
         cmd = action.command
 
@@ -248,14 +382,56 @@ class RuleBasedAI(AIPlayer):
         from_pos = card.position
         to_pos = cmd.position
 
-        # Check if card has ranged attack ability
-        has_ranged = any(
-            'shot' in aid or 'lunge' in aid
-            for aid in card.stats.ability_ids
-        )
+        # Calculate card's front-row suitability
+        frs = front_row_score(card)
+        is_tank = frs > 35  # High FRS = tank/fighter, wants enemies
+        is_ranged_type = frs < 15  # Low FRS = ranged/healer, wants distance
+
+        # Check if card should maximize distance (ranged/heal abilities)
+        wants_distance = should_maximize_distance(card)
 
         # Check if card has formation ability
         has_formation = self._has_formation_ability(card)
+
+        # Calculate distances for later use
+        current_dist = self._get_distance_to_nearest_enemy(from_pos)
+        new_dist = self._get_distance_to_nearest_enemy(to_pos)
+
+        # RANGE-AWARE POSITIONING for ranged/heal cards
+        # These cards want to stay within their optimal attack range
+        if wants_distance:
+            min_range, max_range = get_optimal_range(card)
+
+            # Check if new position is in optimal range
+            in_optimal_new = min_range <= new_dist <= max_range
+            in_optimal_curr = min_range <= current_dist <= max_range
+
+            if in_optimal_new and not in_optimal_curr:
+                # Moving INTO optimal range - excellent!
+                return 80
+            elif in_optimal_new and in_optimal_curr:
+                # Staying in optimal range - neutral movement
+                return 30
+            elif not in_optimal_new and in_optimal_curr:
+                # Moving OUT of optimal range - bad!
+                return 5
+            elif new_dist < min_range:
+                # Too close! Move away
+                if new_dist > current_dist:
+                    return 60  # Getting farther (toward optimal)
+                else:
+                    return 3  # Getting even closer - very bad
+            elif new_dist > max_range:
+                # Too far! But for unlimited range (99), this is fine
+                if max_range >= 10:
+                    # Unlimited range - staying far is OK
+                    return 40
+                else:
+                    # Limited range - need to get closer
+                    if new_dist < current_dist:
+                        return 55  # Getting closer to optimal
+                    else:
+                        return 15  # Getting even farther - bad
 
         # Formation considerations - high priority to maintain/create formations
         if has_formation:
@@ -270,19 +446,20 @@ class RuleBasedAI(AIPlayer):
             if new_formation_allies > current_formation_allies:
                 return 75  # High priority to form up
 
-        # Don't move if card can attack from current position
-        current_targets = game.get_attack_targets(card)
-        enemy_targets = [t for t in current_targets
-                        if game.board.get_card(t) and
-                        game.board.get_card(t).player != self.player]
-        if enemy_targets:
-            # Already in attack range - low priority to move
-            # Unless moving improves formation
-            if has_formation:
-                new_allies = self._count_formation_allies_at(to_pos)
-                if new_allies > self._count_formation_allies_at(from_pos):
-                    return 60  # Formation improvement worth considering
-            return 5
+        # Don't move if card can attack from current position (for non-ranged)
+        if not wants_distance:
+            current_targets = game.get_attack_targets(card)
+            enemy_targets = [t for t in current_targets
+                            if game.board.get_card(t) and
+                            game.board.get_card(t).player != self.player]
+            if enemy_targets:
+                # Already in attack range - low priority to move
+                # Unless moving improves formation
+                if has_formation:
+                    new_allies = self._count_formation_allies_at(to_pos)
+                    if new_allies > self._count_formation_allies_at(from_pos):
+                        return 60  # Formation improvement worth considering
+                return 5
 
         # Check if move brings us into attack range
         # Temporarily simulate the move
@@ -295,14 +472,32 @@ class RuleBasedAI(AIPlayer):
                            if game.board.get_card(t) and
                            game.board.get_card(t).player != self.player]
 
-        if new_enemy_targets and not enemy_targets:
+        current_targets = game.get_attack_targets(card)
+        current_enemy_targets = [t for t in current_targets
+                                if game.board.get_card(t) and
+                                game.board.get_card(t).player != self.player]
+
+        if new_enemy_targets and not current_enemy_targets:
             # Move enables new attacks - high priority!
+            # But even higher for tanks, lower for ranged
+            if is_tank:
+                return 90
+            elif wants_distance:
+                return 40  # Ranged can attack from new position but shouldn't rush
             return 85
 
-        # Cards with ranged abilities shouldn't prioritize advancing
-        # They can attack from distance
-        if has_ranged:
-            return 10
+        # Adjacent enemy heuristic based on card type
+        # Tanks want more adjacent enemies, ranged want fewer
+        current_adj = self._count_adjacent_enemies(from_pos)
+        new_adj = self._count_adjacent_enemies(to_pos)
+
+        adj_bonus = 0
+        if is_tank:
+            # Tanks gain bonus for moves that increase adjacent enemies
+            adj_bonus = (new_adj - current_adj) * 12
+        elif is_ranged_type:
+            # Ranged cards gain bonus for moves that decrease adjacent enemies
+            adj_bonus = (current_adj - new_adj) * 10
 
         # Calculate row advancement
         from_row = from_pos // 5
@@ -314,26 +509,41 @@ class RuleBasedAI(AIPlayer):
         else:
             row_advancement = from_row - to_row  # P2 wants lower rows
 
+        base_score = 20  # Default score
+
         if row_advancement > 0:
-            # Advancing toward enemy row - high priority
-            return 65
+            # Advancing toward enemy row
+            if is_tank:
+                base_score = 70  # Tanks want to advance aggressively
+            elif is_ranged_type:
+                base_score = 15  # Ranged shouldn't rush forward
+            else:
+                base_score = 65  # Normal advancement
         elif row_advancement < 0:
-            # Retreating - very low priority
-            return 3
+            # Retreating
+            if is_ranged_type:
+                base_score = 45  # Ranged WANT to retreat
+            else:
+                base_score = 3  # Very low priority for non-ranged
 
         # Lateral movement (same row) - use distance to pick best column
-        current_dist = self._get_distance_to_nearest_enemy(from_pos)
-        new_dist = self._get_distance_to_nearest_enemy(to_pos)
+        if row_advancement == 0:
+            if new_dist < current_dist:
+                # Lateral move closer to enemy
+                if is_tank:
+                    base_score = 60  # Tanks want to close distance
+                elif is_ranged_type:
+                    base_score = 10  # Ranged shouldn't get closer
+                else:
+                    base_score = 55
+            elif new_dist > current_dist:
+                # Lateral move away from enemy
+                if is_ranged_type:
+                    base_score = 50  # Ranged want to kite away
+                else:
+                    base_score = 10
 
-        if new_dist < current_dist:
-            # Lateral move that gets closer to enemy - good!
-            return 55
-        elif new_dist > current_dist:
-            # Lateral move away from enemy
-            return 10
-        else:
-            # Same distance - neutral lateral move
-            return 20
+        return max(1, base_score + adj_bonus)
 
     def _choose_interaction_action(self, actions: List[AIAction]) -> AIAction:
         """Choose best action for an interaction."""

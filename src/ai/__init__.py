@@ -24,6 +24,7 @@ Usage:
 from .base import AIPlayer, AIAction
 from .random_ai import RandomAI
 from .rule_based_ai import RuleBasedAI
+from .utility_ai import UtilityAI
 from .squad_ai import (
     score_card,
     select_squad_greedy,
@@ -33,7 +34,7 @@ from .squad_ai import (
 )
 
 __all__ = [
-    'AIPlayer', 'AIAction', 'RandomAI', 'RuleBasedAI',
+    'AIPlayer', 'AIAction', 'RandomAI', 'RuleBasedAI', 'UtilityAI',
     'score_card', 'select_squad_greedy', 'select_squad_optimized',
     'place_cards_heuristic', 'build_ai_squad',
 ]

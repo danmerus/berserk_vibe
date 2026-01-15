@@ -603,8 +603,8 @@ class MenusMixin:
         # AI Type selection
         ai_type_y = mode_y + scaled(80)
 
-        ai_types = [('random', 'Random'), ('rulebased', 'Rule-based')]
-        dropdown_width = scaled(150)
+        ai_types = [('random', 'Random'), ('rulebased', 'Rule-based'),] # ('utility', 'Utility')
+        dropdown_width = scaled(170)
         dropdown_height = scaled(32)
 
         if mode == 'vs_ai':

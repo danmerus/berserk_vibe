@@ -113,7 +113,7 @@ class SquadPlaceHandler(StateHandler):
 
                 if vs_ai:
                     # VS AI mode - auto-build AI squad and start game
-                    from ..ai import RandomAI, RuleBasedAI, build_ai_squad
+                    from ..ai import RandomAI, RuleBasedAI, UtilityAI, build_ai_squad
                     from ..card_database import create_starter_deck_p2
 
                     # Seed random for variety in AI squad building
@@ -144,6 +144,8 @@ class SquadPlaceHandler(StateHandler):
 
                     if ai_type == 'random':
                         ai = RandomAI(server, player=2)
+                    elif ai_type == 'utility':
+                        ai = UtilityAI(server, player=2)
                     else:
                         ai = RuleBasedAI(server, player=2)
 

@@ -148,6 +148,26 @@ class GameHandler(StateHandler):
             renderer.hide_popup()
             return None
 
+        # Allow clicking side panels (flyers/graveyard) to view cards
+        if renderer.handle_side_panel_click(mx, my):
+            return None
+
+        # Allow clicking board cards to view popup
+        pos = renderer.screen_to_pos(mx, my)
+        if pos is not None:
+            card = game.board.get_card(pos)
+            if card:
+                renderer.show_popup(card)
+                return None
+
+        # Check flying zones
+        flying_pos = renderer.get_flying_slot_at_pos(mx, my, game)
+        if flying_pos is not None:
+            card = game.board.get_card(flying_pos)
+            if card:
+                renderer.show_popup(card)
+                return None
+
         # No other actions allowed in spectator mode
         return None
 
