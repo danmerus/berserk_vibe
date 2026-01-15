@@ -353,7 +353,7 @@ class UILayout:
     UPDATE_BANNER_BTN_SPACING = 12     # Space between buttons
     UPDATE_BANNER_X_BTN_SIZE = 38
     # Progress bar (during download)
-    UPDATE_PROGRESS_BAR_WIDTH = 400
+    UPDATE_PROGRESS_BAR_WIDTH = 500
     UPDATE_PROGRESS_BAR_HEIGHT = 25
     UPDATE_PROGRESS_BAR_Y = 40         # Y offset from banner top
     UPDATE_PROGRESS_BG = (30, 60, 40)
