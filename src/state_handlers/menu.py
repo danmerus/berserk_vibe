@@ -361,8 +361,16 @@ class MenuHandler(StateHandler):
         # Check if update is ready to apply (quit from main thread, not background)
         if self.ctx.update_ready_to_apply:
             import os
+            import ctypes
+            # Suppress Windows error dialogs
+            if hasattr(ctypes, 'windll'):
+                SEM_NOGPFAULTERRORBOX = 0x0002
+                SEM_FAILCRITICALERRORS = 0x0001
+                SEM_NOOPENFILEERRORBOX = 0x8000
+                ctypes.windll.kernel32.SetErrorMode(
+                    SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX
+                )
             pygame.quit()
-            # Use os._exit() to skip Python cleanup - avoids DLL errors during update
             os._exit(0)
         return None
 
