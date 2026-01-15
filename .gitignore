@@ -20,15 +20,13 @@ __pycache__/
 .DS_Store
 Thumbs.db
 nul
+*.md
 
 # Claude
 .claude/
 
 # Screenshots (optional)
 *.png
-
-# Data folder (card images - too large for git)
-data/
 
 # Tools (bore binary - auto-downloaded on first use)
 tools/
